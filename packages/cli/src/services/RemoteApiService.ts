@@ -11,7 +11,7 @@ import type {
   StreamingState,
   ThoughtSummary,
 } from '../ui/types.js';
-import { debugLogger } from '@google/gemini-cli-core';
+import { debugLogger, type ApprovalMode } from '@google/gemini-cli-core';
 
 export enum RemoteMessageType {
   SESSION_INIT = 'SESSION_INIT',
@@ -24,10 +24,39 @@ export enum RemoteMessageType {
   STOP_GENERATION = 'STOP_GENERATION',
 }
 
-export interface RemoteMessage {
-  type: RemoteMessageType;
-  payload?: Record<string, unknown>;
-}
+/** Messages sent from CLI to Web Client */
+export type RemoteOutgoingMessage =
+  | {
+      type: RemoteMessageType.SESSION_INIT;
+      payload: {
+        sessionId: string;
+        history: HistoryItem[];
+        config: { model: string | undefined; approvalMode: ApprovalMode };
+        streamingState: StreamingState;
+      };
+    }
+  | { type: RemoteMessageType.HISTORY_UPDATE; payload: { item: HistoryItem } }
+  | {
+      type: RemoteMessageType.THOUGHT_STREAM;
+      payload: { thought: ThoughtSummary; isComplete: boolean };
+    }
+  | {
+      type: RemoteMessageType.STREAMING_STATE;
+      payload: { state: StreamingState };
+    }
+  | {
+      type: RemoteMessageType.CONFIRMATION_REQUEST;
+      payload: { id: number; prompt: string; type: string };
+    };
+
+/** Messages received by CLI from Web Client */
+export type RemoteIncomingMessage =
+  | { type: RemoteMessageType.SEND_PROMPT; payload: { text: string } }
+  | {
+      type: RemoteMessageType.CONFIRMATION_RESPONSE;
+      payload: { id: number; confirmed: boolean };
+    }
+  | { type: RemoteMessageType.STOP_GENERATION };
 
 export class RemoteApiService extends EventEmitter {
   private wss: WebSocketServer | null = null;
@@ -52,7 +81,9 @@ export class RemoteApiService extends EventEmitter {
       ws.on('message', (data) => {
         try {
           const parsed: unknown = JSON.parse(data.toString());
-          this.handleIncomingMessage(ws, parsed);
+          if (this.isRemoteIncomingMessage(parsed)) {
+            this.handleIncomingMessage(ws, parsed);
+          }
         } catch (e) {
           debugLogger.log(`Error parsing remote message: ${String(e)}`);
         }
@@ -70,69 +101,71 @@ export class RemoteApiService extends EventEmitter {
     this.clients.clear();
   }
 
-  private handleIncomingMessage(_ws: WebSocket, message: unknown): void {
-    if (!this.isRemoteMessage(message)) {
-      return;
-    }
-
-    const { type, payload } = message;
-
-    if (type === RemoteMessageType.SEND_PROMPT) {
-      if (payload && typeof payload['text'] === 'string') {
-        this.emit('send_prompt', payload['text']);
-      }
-    } else if (type === RemoteMessageType.CONFIRMATION_RESPONSE) {
-      if (
-        payload &&
-        typeof payload['id'] === 'number' &&
-        typeof payload['confirmed'] === 'boolean'
-      ) {
-        this.emit('confirmation_response', payload['id'], payload['confirmed']);
-      }
-    } else if (type === RemoteMessageType.STOP_GENERATION) {
-      this.emit('stop_generation');
-    } else {
-      debugLogger.log(`Unknown remote message type: ${String(type)}`);
-    }
-  }
-
-  private isRemoteMessage(
-    message: unknown,
-  ): message is { type: RemoteMessageType; payload?: Record<string, unknown> } {
-    if (typeof message !== 'object' || message === null) {
-      return false;
-    }
-
-    const hasType = 'type' in message && typeof message.type === 'string';
-    if (!hasType) {
-      return false;
-    }
-
-    const type = message.type;
-    const validTypes: string[] = Object.values(RemoteMessageType);
-    let isValidType = false;
-    for (const v of validTypes) {
-      if (v === type) {
-        isValidType = true;
+  private handleIncomingMessage(
+    _ws: WebSocket,
+    message: RemoteIncomingMessage,
+  ): void {
+    switch (message.type) {
+      case RemoteMessageType.SEND_PROMPT:
+        this.emit('send_prompt', message.payload.text);
         break;
-      }
+      case RemoteMessageType.CONFIRMATION_RESPONSE:
+        this.emit(
+          'confirmation_response',
+          message.payload.id,
+          message.payload.confirmed,
+        );
+        break;
+      case RemoteMessageType.STOP_GENERATION:
+        this.emit('stop_generation');
+        break;
+      default:
+        // Discriminated union ensures we cover all cases, but linter wants a default
+        break;
     }
+  }
 
-    if (!isValidType) {
+  private isRemoteIncomingMessage(
+    message: unknown,
+  ): message is RemoteIncomingMessage {
+    if (
+      typeof message !== 'object' ||
+      message === null ||
+      !('type' in message)
+    ) {
       return false;
     }
 
-    if ('payload' in message) {
-      const payload = message.payload;
-      if (typeof payload !== 'object' || payload === null) {
-        return false;
-      }
+    const m = message as { type: unknown; payload?: unknown };
+
+    if (m.type === RemoteMessageType.SEND_PROMPT) {
+      return (
+        typeof m.payload === 'object' &&
+        m.payload !== null &&
+        'text' in m.payload &&
+        typeof (m.payload as { text: unknown }).text === 'string'
+      );
     }
 
-    return true;
+    if (m.type === RemoteMessageType.CONFIRMATION_RESPONSE) {
+      return (
+        typeof m.payload === 'object' &&
+        m.payload !== null &&
+        'id' in m.payload &&
+        'confirmed' in m.payload &&
+        typeof (m.payload as { id: unknown }).id === 'number' &&
+        typeof (m.payload as { confirmed: unknown }).confirmed === 'boolean'
+      );
+    }
+
+    if (m.type === RemoteMessageType.STOP_GENERATION) {
+      return true;
+    }
+
+    return false;
   }
 
-  broadcast(message: RemoteMessage) {
+  broadcast(message: RemoteOutgoingMessage) {
     const data = JSON.stringify(message);
     for (const client of this.clients) {
       if (client.readyState === client.OPEN) {
@@ -141,7 +174,7 @@ export class RemoteApiService extends EventEmitter {
     }
   }
 
-  sendToClient(ws: WebSocket, message: RemoteMessage) {
+  sendToClient(ws: WebSocket, message: RemoteOutgoingMessage) {
     if (ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify(message));
     }
