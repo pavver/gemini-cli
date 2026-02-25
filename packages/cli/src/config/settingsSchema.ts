@@ -2157,6 +2157,36 @@ const SETTINGS_SCHEMA = {
       },
     },
   },
+
+  remote: {
+    type: 'object',
+    label: 'Remote API',
+    category: 'Remote',
+    requiresRestart: true,
+    default: {},
+    description: 'Settings for Remote API (WebSocket).',
+    showInDialog: true,
+    properties: {
+      enabled: {
+        type: 'boolean',
+        label: 'Enable Remote API',
+        category: 'Remote',
+        requiresRestart: true,
+        default: false,
+        description: 'Enable Remote WebSocket API for web interface.',
+        showInDialog: true,
+      },
+      port: {
+        type: 'number',
+        label: 'Remote API Port',
+        category: 'Remote',
+        requiresRestart: true,
+        default: 8080,
+        description: 'Port for the Remote WebSocket API.',
+        showInDialog: true,
+      },
+    },
+  },
 } as const satisfies SettingsSchema;
 
 export type SettingsSchemaType = typeof SETTINGS_SCHEMA;

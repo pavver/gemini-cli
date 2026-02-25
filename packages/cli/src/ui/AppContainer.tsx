@@ -95,6 +95,7 @@ import { useSettingsCommand } from './hooks/useSettingsCommand.js';
 import { useModelCommand } from './hooks/useModelCommand.js';
 import { useSlashCommandProcessor } from './hooks/slashCommandProcessor.js';
 import { useVimMode } from './contexts/VimModeContext.js';
+import { useRemoteApi } from './hooks/useRemoteApi.js';
 import {
   useOverflowActions,
   useOverflowState,
@@ -2607,6 +2608,8 @@ Logging in with Google... Restarting Gemini CLI to continue.
       historyManager,
     ],
   );
+
+  useRemoteApi(uiState, uiActions);
 
   if (authState === AuthState.AwaitingGoogleLoginRestart) {
     return (
