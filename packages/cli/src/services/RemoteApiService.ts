@@ -136,33 +136,38 @@ export class RemoteApiService extends EventEmitter {
       return false;
     }
 
-    const m = message as { type: unknown; payload?: unknown };
+    const type = message.type;
 
-    if (m.type === RemoteMessageType.SEND_PROMPT) {
+    if (type === RemoteMessageType.SEND_PROMPT) {
+      if (
+        !('payload' in message) ||
+        typeof message.payload !== 'object' ||
+        message.payload === null
+      ) {
+        return false;
+      }
+      const payload = message.payload;
+      return 'text' in payload && typeof payload.text === 'string';
+    }
+
+    if (type === RemoteMessageType.CONFIRMATION_RESPONSE) {
+      if (
+        !('payload' in message) ||
+        typeof message.payload !== 'object' ||
+        message.payload === null
+      ) {
+        return false;
+      }
+      const payload = message.payload;
       return (
-        typeof m.payload === 'object' &&
-        m.payload !== null &&
-        'text' in m.payload &&
-        typeof (m.payload as { text: unknown }).text === 'string'
+        'id' in payload &&
+        'confirmed' in payload &&
+        typeof payload.id === 'number' &&
+        typeof payload.confirmed === 'boolean'
       );
     }
 
-    if (m.type === RemoteMessageType.CONFIRMATION_RESPONSE) {
-      return (
-        typeof m.payload === 'object' &&
-        m.payload !== null &&
-        'id' in m.payload &&
-        'confirmed' in m.payload &&
-        typeof (m.payload as { id: unknown }).id === 'number' &&
-        typeof (m.payload as { confirmed: unknown }).confirmed === 'boolean'
-      );
-    }
-
-    if (m.type === RemoteMessageType.STOP_GENERATION) {
-      return true;
-    }
-
-    return false;
+    return type === RemoteMessageType.STOP_GENERATION;
   }
 
   broadcast(message: RemoteOutgoingMessage) {
