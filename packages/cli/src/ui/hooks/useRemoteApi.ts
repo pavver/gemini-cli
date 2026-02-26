@@ -21,6 +21,7 @@ import {
   debugLogger,
   AuthType,
   CoreToolCallStatus,
+  type ApprovalMode,
 } from '@google/gemini-cli-core';
 import { useSettings } from '../contexts/SettingsContext.js';
 import { SettingScope } from '../../config/settings.js';
