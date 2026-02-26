@@ -239,6 +239,13 @@ export function useRemoteApi(
         if (pid) ShellExecutionService.resizePty(pid, cols, rows);
       });
 
+      service.on('set_config', (approvalMode?: ApprovalMode) => {
+        const actions = uiActionsRef.current;
+        if (approvalMode && actions) {
+          void actions.handleFinalSubmit(`/${approvalMode.toLowerCase()}`);
+        }
+      });
+
       service.on(
         'confirmation_response',
         (_id: number, confirmed: boolean, choice?: string) => {
@@ -376,6 +383,22 @@ export function useRemoteApi(
       },
     });
   }, [uiState.isAuthenticating, uiState.authError]);
+
+  // Sync Confirmation Requests
+  useEffect(() => {
+    if (uiState.commandConfirmationRequest && remoteApiRef.current) {
+      remoteApiRef.current.broadcast({
+        type: RemoteMessageType.CONFIRMATION_REQUEST,
+        payload: {
+          id: Date.now(),
+          // Prompt is ReactNode, so we send a generic message for now
+          // Ideally we should extract the text or diff from it
+          prompt: 'Confirmation required for tool execution',
+          type: 'tool_approval',
+        },
+      });
+    }
+  }, [uiState.commandConfirmationRequest]);
 
   // Proxy shell output
   useEffect(() => {

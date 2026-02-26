@@ -38,6 +38,9 @@ export enum RemoteMessageType {
   SESSION_STATE_REQUEST = 'SESSION_STATE_REQUEST',
   HISTORY_REQUEST = 'HISTORY_REQUEST',
   HISTORY_RESPONSE = 'HISTORY_RESPONSE',
+  OPEN_DIFF = 'OPEN_DIFF',
+  DIFF_RESPONSE = 'DIFF_RESPONSE',
+  SET_CONFIG = 'SET_CONFIG',
 }
 
 export interface RemoteSuggestion {
@@ -69,7 +72,7 @@ export type RemoteOutgoingMessage =
   | {
       type: RemoteMessageType.SESSION_INIT;
       payload: {
-        apiVersion: number; // Current protocol version (e.g., 2)
+        apiVersion: number;
         sessionId: string;
         history: HistoryItem[];
         config: { model: string | undefined; approvalMode: ApprovalMode };
@@ -132,6 +135,10 @@ export type RemoteOutgoingMessage =
         limit: number;
         total: number;
       };
+    }
+  | {
+      type: RemoteMessageType.OPEN_DIFF;
+      payload: { filePath: string; newContent: string };
     };
 
 /** Messages received by CLI from Web Client */
@@ -162,6 +169,14 @@ export type RemoteIncomingMessage =
   | {
       type: RemoteMessageType.HISTORY_REQUEST;
       payload: { offset: number; limit: number };
+    }
+  | {
+      type: RemoteMessageType.DIFF_RESPONSE;
+      payload: { filePath: string; accepted: boolean; content?: string };
+    }
+  | {
+      type: RemoteMessageType.SET_CONFIG;
+      payload: { approvalMode?: ApprovalMode };
     };
 
 export class RemoteApiService extends EventEmitter {
@@ -269,6 +284,17 @@ export class RemoteApiService extends EventEmitter {
           message.payload.offset,
           message.payload.limit,
         );
+        break;
+      case RemoteMessageType.DIFF_RESPONSE:
+        this.emit(
+          'diff_response',
+          message.payload.filePath,
+          message.payload.accepted,
+          message.payload.content,
+        );
+        break;
+      case RemoteMessageType.SET_CONFIG:
+        this.emit('set_config', message.payload.approvalMode);
         break;
       default:
         // Discriminated union ensures we cover all cases, but linter wants a default
@@ -409,6 +435,37 @@ export class RemoteApiService extends EventEmitter {
         'limit' in payload &&
         typeof payload.limit === 'number'
       );
+    }
+
+    if (type === RemoteMessageType.DIFF_RESPONSE) {
+      if (
+        !('payload' in message) ||
+        typeof message.payload !== 'object' ||
+        message.payload === null
+      ) {
+        return false;
+      }
+      const payload = message.payload as {
+        filePath?: unknown;
+        accepted?: unknown;
+        content?: unknown;
+      };
+      return (
+        typeof payload.filePath === 'string' &&
+        typeof payload.accepted === 'boolean' &&
+        (!('content' in payload) || typeof payload.content === 'string')
+      );
+    }
+
+    if (type === RemoteMessageType.SET_CONFIG) {
+      if (
+        !('payload' in message) ||
+        typeof message.payload !== 'object' ||
+        message.payload === null
+      ) {
+        return false;
+      }
+      return true; // Simple check for now
     }
 
     return type === RemoteMessageType.STOP_GENERATION;
