@@ -1,0 +1,18 @@
+[Unit]
+Description=Gemini Remote Orchestrator Service
+After=network.target
+
+[Service]
+Type=simple
+User=radxa
+Group=radxa
+WorkingDirectory=/home/radxa/gemini/gemini-remote-orchestrator
+ExecStart=/home/radxa/gemini/gemini-remote-orchestrator/target/release/gemini-remote-orchestrator
+Restart=always
+RestartSec=5
+# Передаємо шлях до node
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=GEMINI_CLI_NO_RELAUNCH=true
+
+[Install]
+WantedBy=multi-user.target

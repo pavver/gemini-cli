@@ -2609,7 +2609,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
     ],
   );
 
-  useRemoteApi(uiState, uiActions);
+  useRemoteApi(uiState, uiActions, config);
 
   if (authState === AuthState.AwaitingGoogleLoginRestart) {
     return (

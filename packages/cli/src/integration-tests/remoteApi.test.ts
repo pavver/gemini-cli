@@ -10,6 +10,8 @@ import {
   RemoteMessageType,
 } from '../services/RemoteApiService.js';
 import { WebSocket } from 'ws';
+import { ApprovalMode } from '@google/gemini-cli-core';
+import { StreamingState } from '../ui/types.js';
 
 describe('RemoteApiService Integration', () => {
   let service: RemoteApiService;
@@ -36,7 +38,24 @@ describe('RemoteApiService Integration', () => {
     service.on('client_connected', (clientWs) => {
       service.sendToClient(clientWs, {
         type: RemoteMessageType.SESSION_INIT,
-        payload: { sessionId: 'test-session', history: [] },
+        payload: {
+          sessionId: 'test-session',
+          history: [],
+          config: { model: 'test-model', approvalMode: ApprovalMode.DEFAULT },
+          streamingState: StreamingState.Idle,
+          activePtyId: null,
+          shellHistory: null,
+          status: {
+            model: 'test-model',
+            ramUsage: '0 MB',
+            contextTokens: 0,
+            geminiMdFileCount: 0,
+            skillsCount: 0,
+            mcpServers: [],
+          },
+          commands: [],
+          authState: 'authenticated',
+        },
       });
     });
 

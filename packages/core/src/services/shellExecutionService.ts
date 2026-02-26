@@ -908,6 +908,14 @@ export class ShellExecutionService {
     }
   }
 
+  static getTerminalBuffer(pid: number): AnsiOutput | undefined {
+    const pty = this.activePtys.get(pid);
+    if (pty) {
+      return serializeTerminalToObject(pty.headlessTerminal);
+    }
+    return undefined;
+  }
+
   /**
    * Writes a string to the pseudo-terminal (PTY) of a running process.
    *

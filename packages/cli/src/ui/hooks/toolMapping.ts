@@ -111,6 +111,7 @@ export function mapToDisplay(
       progressTotal,
       approvalMode: call.approvalMode,
       originalRequestName: call.request.originalRequestName,
+      args: call.request.args as Record<string, unknown>,
     };
   });
 

@@ -90,7 +90,7 @@ export interface ToolCallEvent {
   status: CoreToolCallStatus;
   callId: string;
   name: string;
-  args: Record<string, never>;
+  args: Record<string, unknown>;
   resultDisplay: ToolResultDisplay | undefined;
   confirmationDetails: SerializableConfirmationDetails | undefined;
   correlationId?: string;
@@ -112,6 +112,7 @@ export interface IndividualToolCallDisplay {
   originalRequestName?: string;
   progress?: number;
   progressTotal?: number;
+  args?: Record<string, unknown>;
 }
 
 export interface CompressionProps {
@@ -356,9 +357,6 @@ export type HistoryItemHooksList = HistoryItemBase & {
   }>;
 };
 
-// Using Omit<HistoryItem, 'id'> seems to have some issues with typescript's
-// type inference e.g. historyItem.type === 'tool_group' isn't auto-inferring that
-// 'tools' in historyItem.
 // Individually exported types extending HistoryItemBase
 export type HistoryItemWithoutId =
   | HistoryItemUser
@@ -431,6 +429,7 @@ export type Message =
       gcpProject: string;
       ideClient: string;
       userEmail?: string;
+      tier?: string;
       content?: string; // Optional content, not really used for ABOUT
     }
   | {
