@@ -4,14 +4,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import {
   RemoteApiService,
   RemoteMessageType,
   type SystemStatus,
   type RemoteSuggestion,
 } from '../../services/RemoteApiService.js';
-import type { HistoryItem } from '../types.js';
+import { type HistoryItem } from '../types.js';
 import type { UIState } from '../contexts/UIStateContext.js';
 import type { UIActions } from '../contexts/UIActionsContext.js';
 import {
@@ -20,10 +20,15 @@ import {
   ShellExecutionService,
   debugLogger,
   AuthType,
+  CoreToolCallStatus,
 } from '@google/gemini-cli-core';
 import { useSettings } from '../contexts/SettingsContext.js';
 import { SettingScope } from '../../config/settings.js';
 import { glob } from 'glob';
+import { execSync } from 'node:child_process';
+import os from 'node:os';
+import { type EventEmitter } from 'node:events';
+import { type WebSocket } from 'ws';
 
 export function useRemoteApi(
   uiState: UIState,
@@ -42,10 +47,29 @@ export function useRemoteApi(
     uiStateRef.current = uiState;
   }, [uiActions, uiState]);
 
-  const getSystemStatus = (): SystemStatus => {
+  const getGitBranch = useCallback((): string | null => {
+    try {
+      return execSync('git rev-parse --abbrev-ref HEAD', {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        cwd: process.cwd(),
+      })
+        .toString()
+        .trim();
+    } catch (_error: unknown) {
+      return null;
+    }
+  }, []);
+
+  const getSystemStatus = useCallback((): SystemStatus => {
     const state = uiStateRef.current;
-    const mcpItem = state.history.findLast((item): item is HistoryItem & { type: 'mcp_status' } => item.type === 'mcp_status');
-    const skillsItem = state.history.findLast((item): item is HistoryItem & { type: 'skills_list' } => item.type === 'skills_list');
+    const mcpItem = state.history.findLast(
+      (item): item is HistoryItem & { type: 'mcp_status' } =>
+        item.type === 'mcp_status',
+    );
+    const skillsItem = state.history.findLast(
+      (item): item is HistoryItem & { type: 'skills_list' } =>
+        item.type === 'skills_list',
+    );
     const tokens = state.sessionStats.lastPromptTokenCount || 0;
 
     return {
@@ -54,33 +78,61 @@ export function useRemoteApi(
       contextTokens: tokens,
       geminiMdFileCount: state.geminiMdFileCount,
       skillsCount: skillsItem?.skills.length ?? 0,
-      mcpServers: Object.entries(mcpItem?.servers ?? {}).map(([name, cfg]) => ({
-        name,
-        status: (cfg as Record<string, unknown>)?.enabled ? 'connected' : 'disabled',
-      })),
+      mcpServers: Object.entries(mcpItem?.servers ?? {}).map(([name, cfg]) => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+        const cfgObj = cfg as unknown as Record<string, unknown>;
+        const isEnabled = cfgObj['enabled'] === true;
+        return {
+          name,
+          status: isEnabled ? 'connected' : 'disabled',
+        };
+      }),
+      cwd: process.cwd(),
+      gitBranch: getGitBranch(),
+      platform: os.platform(),
     };
-  };
+  }, [getGitBranch]);
 
   useEffect(() => {
-    const isEnabled = process.env['GEMINI_REMOTE_ENABLED'] === 'true' || (settings.merged.remote?.enabled ?? false);
-    const port = Number(process.env['GEMINI_REMOTE_PORT']) || (settings.merged.remote?.port ?? 8080);
+    const isEnabled =
+      process.env['GEMINI_REMOTE_ENABLED'] === 'true' ||
+      (settings.merged.remote?.enabled ?? false);
+    const port =
+      Number(process.env['GEMINI_REMOTE_PORT']) ||
+      (settings.merged.remote?.port ?? 8080);
 
     if (isEnabled && !remoteApiRef.current) {
       const service = new RemoteApiService(port);
       remoteApiRef.current = service;
 
-      service.on('client_connected', (ws) => {
+      service.on('client_connected', () => {
+        debugLogger.log(
+          'Remote client connected, waiting for version handshake...',
+        );
+      });
+
+      service.on('session_state_request', (ws: WebSocket) => {
+        const clientVersion = service.getClientVersion(ws);
+        debugLogger.log(`Handshake received. Client version: ${clientVersion}`);
+
         const activePtyId = uiStateRef.current.activePtyId ?? null;
-        const commands = (uiStateRef.current.slashCommands ?? []).map((cmd) => ({
-          name: cmd.name,
-          description: cmd.description || '',
-        }));
+        const commands = (uiStateRef.current.slashCommands ?? []).map(
+          (cmd) => ({
+            name: cmd.name,
+            description: cmd.description || '',
+          }),
+        );
+
+        const fullHistory = uiStateRef.current.history;
+        const initialHistory =
+          clientVersion >= 1 ? fullHistory.slice(-50) : fullHistory;
 
         service.sendToClient(ws, {
           type: RemoteMessageType.SESSION_INIT,
           payload: {
+            apiVersion: 1,
             sessionId: config.getSessionId(),
-            history: uiStateRef.current.history,
+            history: initialHistory,
             config: {
               model: uiStateRef.current.currentModel,
               approvalMode: uiStateRef.current.showApprovalModeIndicator,
@@ -90,28 +142,23 @@ export function useRemoteApi(
             shellHistory: null,
             status: getSystemStatus(),
             commands,
-            authState: uiStateRef.current.isAuthenticating ? 'authenticating' : 'authenticated',
+            authState: uiStateRef.current.isAuthenticating
+              ? 'authenticating'
+              : 'authenticated',
           },
         });
       });
 
-      service.on('session_state_request', () => {
-        service.broadcast({
-          type: RemoteMessageType.SESSION_INIT,
-          payload: {
-            sessionId: config.getSessionId(),
-            history: uiStateRef.current.history,
-            config: {
-              model: uiStateRef.current.currentModel,
-              approvalMode: uiStateRef.current.showApprovalModeIndicator,
-            },
-            streamingState: uiStateRef.current.streamingState,
-            activePtyId: uiStateRef.current.activePtyId ?? null,
-            shellHistory: null,
-            status: getSystemStatus(),
-            commands: [],
-            authState: uiStateRef.current.isAuthenticating ? 'authenticating' : 'authenticated',
-          },
+      service.on('history_request', (offset: number, limit: number) => {
+        const fullHistory = uiStateRef.current.history;
+        const total = fullHistory.length;
+        const start = Math.max(0, total - offset - limit);
+        const end = total - offset;
+        const items = fullHistory.slice(start, end);
+
+        remoteApiRef.current?.broadcast({
+          type: RemoteMessageType.HISTORY_RESPONSE,
+          payload: { items, offset, limit, total },
         });
       });
 
@@ -123,7 +170,9 @@ export function useRemoteApi(
       });
 
       service.on('stop_generation', () => {
-        debugLogger.log('Stop generation requested via Remote API');
+        debugLogger.log(
+          'Stop generation requested but not implemented in UIActions yet',
+        );
       });
 
       service.on('shell_input', (text: string) => {
@@ -134,7 +183,10 @@ export function useRemoteApi(
       service.on('auth_submit', (method?: string, apiKey?: string) => {
         const actions = uiActionsRef.current;
         if (method === 'google') {
-          actions.handleAuthSelect(AuthType.LOGIN_WITH_GOOGLE, SettingScope.User);
+          actions.handleAuthSelect(
+            AuthType.LOGIN_WITH_GOOGLE,
+            SettingScope.User,
+          );
         } else if (method === 'api_key' && apiKey) {
           actions.handleAuthSelect(AuthType.USE_GEMINI, SettingScope.User);
           void actions.handleApiKeySubmit(apiKey);
@@ -143,39 +195,68 @@ export function useRemoteApi(
         }
       });
 
-      service.on('search_request', async (query: string, type: 'at' | 'slash') => {
-        if (type === 'at') {
-          try {
-            const files = await glob(`${query}*`, { cwd: process.cwd(), mark: true, maxDepth: 2 });
-            const suggestions: RemoteSuggestion[] = files.map(f => ({
-              label: f, value: f, type: f.endsWith('/') ? 'folder' : 'file'
-            }));
-            service.broadcast({ type: RemoteMessageType.SEARCH_RESPONSE, payload: { query, suggestions } });
-          } catch (e) { debugLogger.log(`Search error: ${String(e)}`); }
-        } else {
-          const commands = (uiStateRef.current.slashCommands ?? [])
-            .filter(c => c.name.startsWith(query.replace('/', '')))
-            .map(c => ({ label: c.name, value: `/${c.name}`, description: c.description || '', type: 'command' as const }));
-          service.broadcast({ type: RemoteMessageType.SEARCH_RESPONSE, payload: { query, suggestions: commands } });
-        }
-      });
+      service.on(
+        'search_request',
+        async (query: string, type: 'at' | 'slash') => {
+          if (type === 'at') {
+            try {
+              const files = await glob(`${query}*`, {
+                cwd: process.cwd(),
+                mark: true,
+                maxDepth: 2,
+              });
+              const suggestions: RemoteSuggestion[] = files.map((f) => ({
+                label: f,
+                value: f,
+                type: f.endsWith('/') ? 'folder' : 'file',
+              }));
+              service.broadcast({
+                type: RemoteMessageType.SEARCH_RESPONSE,
+                payload: { query, suggestions },
+              });
+            } catch (_e: unknown) {
+              debugLogger.log(`Search error: ${String(_e)}`);
+            }
+          } else {
+            const commands = (uiStateRef.current.slashCommands ?? [])
+              .filter((c) => c.name.startsWith(query.replace('/', '')))
+              .map((c) => ({
+                label: c.name,
+                value: `/${c.name}`,
+                description: c.description || '',
+                type: 'command' as const,
+              }));
+            service.broadcast({
+              type: RemoteMessageType.SEARCH_RESPONSE,
+              payload: { query, suggestions: commands },
+            });
+          }
+        },
+      );
 
       service.on('resize_terminal', (cols: number, rows: number) => {
         const pid = uiStateRef.current.activePtyId;
         if (pid) ShellExecutionService.resizePty(pid, cols, rows);
       });
 
-      service.on('confirmation_response', (_id: number, confirmed: boolean, choice?: string) => {
-        const state = uiStateRef.current;
-        if (state.commandConfirmationRequest) {
-          state.commandConfirmationRequest.onConfirm(confirmed);
-        } else if (state.authConsentRequest) {
-          state.authConsentRequest.onConfirm(confirmed);
-        } else if (state.loopDetectionConfirmationRequest && (choice === 'disable' || choice === 'keep')) {
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-          state.loopDetectionConfirmationRequest.onComplete({ userSelection: choice as 'disable' | 'keep' });
-        }
-      });
+      service.on(
+        'confirmation_response',
+        (_id: number, confirmed: boolean, choice?: string) => {
+          const state = uiStateRef.current;
+          if (state.commandConfirmationRequest) {
+            state.commandConfirmationRequest.onConfirm(confirmed);
+          } else if (state.authConsentRequest) {
+            state.authConsentRequest.onConfirm(confirmed);
+          } else if (
+            state.loopDetectionConfirmationRequest &&
+            (choice === 'disable' || choice === 'keep')
+          ) {
+            state.loopDetectionConfirmationRequest.onComplete({
+              userSelection: choice,
+            });
+          }
+        },
+      );
 
       service.start();
     }
@@ -184,17 +265,29 @@ export function useRemoteApi(
       remoteApiRef.current?.stop();
       remoteApiRef.current = null;
     };
-  }, [config, settings.merged.remote?.enabled, settings.merged.remote?.port]);
+  }, [
+    config,
+    settings.merged.remote?.enabled,
+    settings.merged.remote?.port,
+    getSystemStatus,
+  ]);
 
   // Sync History
   useEffect(() => {
     if (uiState.history.length > lastHistoryLength.current) {
       const newItems = uiState.history.slice(lastHistoryLength.current);
       newItems.forEach((item: HistoryItem) => {
-        // Use a safe check for additional properties instead of any
-        const hasCalls = 'calls' in item && Array.isArray(item.calls);
-        if (item.type.includes('tool_call') || hasCalls) {
-          remoteApiRef.current?.broadcast({ type: RemoteMessageType.HISTORY_UPDATE, payload: { item } });
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+        const itemWithType = item as unknown as Record<string, unknown>;
+        const type = itemWithType['type'];
+        if (
+          typeof type === 'string' &&
+          (type.includes('tool_call') || type === 'tool_group')
+        ) {
+          remoteApiRef.current?.broadcast({
+            type: RemoteMessageType.HISTORY_UPDATE,
+            payload: { item },
+          });
         } else {
           remoteApiRef.current?.broadcastHistoryUpdate(item);
         }
@@ -203,34 +296,69 @@ export function useRemoteApi(
     lastHistoryLength.current = uiState.history.length;
   }, [uiState.history]);
 
-  // Periodic Status Updates
+  // Reactive Status Updates
   useEffect(() => {
-    const interval = setInterval(() => {
-      if (remoteApiRef.current) {
-        remoteApiRef.current.broadcast({ type: RemoteMessageType.STATUS_UPDATE, payload: getSystemStatus() });
-      }
-    }, 2000);
-    return () => clearInterval(interval);
-  }, []);
+    if (remoteApiRef.current) {
+      remoteApiRef.current.broadcast({
+        type: RemoteMessageType.STATUS_UPDATE,
+        payload: getSystemStatus(),
+      });
+    }
+  }, [
+    uiState.currentModel,
+    uiState.geminiMdFileCount,
+    uiState.sessionStats.lastPromptTokenCount,
+    uiState.history.length,
+    uiState.streamingState,
+    uiState.activePtyId,
+    getSystemStatus,
+  ]);
 
   // Tool Call Interceptor
   useEffect(() => {
-    const handleToolCall = (event: { name: string; args: Record<string, unknown> }) => {
-      // Create a plain object that satisfies HistoryItem interface requirements
-      const item = { 
-        id: Date.now(), 
-        type: 'tool_call', 
-        calls: [{ name: event.name, args: event.args }] 
+    const handleToolCall = (event: {
+      name: string;
+      args: Record<string, unknown>;
+      status?: string;
+      callId?: string;
+    }) => {
+      const item: HistoryItem = {
+        id: Date.now(),
+        type: 'tool_group',
+        tools: [
+          {
+            callId: event.callId || `remote-${Date.now()}`,
+            name: event.name,
+            args: event.args,
+            status:
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+              (event.status as unknown as CoreToolCallStatus) ||
+              CoreToolCallStatus.Executing,
+            description: `Executing ${event.name}...`,
+            resultDisplay: undefined,
+            confirmationDetails: undefined,
+          },
+        ],
       };
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-      remoteApiRef.current?.broadcast({ type: RemoteMessageType.HISTORY_UPDATE, payload: { item: item as unknown as HistoryItem } });
+      remoteApiRef.current?.broadcast({
+        type: RemoteMessageType.HISTORY_UPDATE,
+        payload: { item },
+      });
     };
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-    (coreEvents as unknown as Record<string, { on: (e: string, cb: (ev: any) => void) => void }>).on('tool_call', handleToolCall);
-    return () => { 
+    const events = coreEvents as unknown as Record<string, unknown>;
+    if (
+      typeof events['on'] === 'function' &&
+      typeof events['off'] === 'function'
+    ) {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-      (coreEvents as unknown as Record<string, { off: (e: string, cb: (ev: any) => void) => void }>).off('tool_call', handleToolCall); 
-    };
+      (events as unknown as EventEmitter).on('tool_call', handleToolCall);
+      return () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+        (events as unknown as EventEmitter).off('tool_call', handleToolCall);
+      };
+    }
+    return;
   }, []);
 
   // Sync Streaming State
@@ -244,8 +372,8 @@ export function useRemoteApi(
       type: RemoteMessageType.AUTH_UPDATE,
       payload: {
         state: uiState.isAuthenticating ? 'authenticating' : 'authenticated',
-        error: uiState.authError
-      }
+        error: uiState.authError,
+      },
     });
   }, [uiState.isAuthenticating, uiState.authError]);
 

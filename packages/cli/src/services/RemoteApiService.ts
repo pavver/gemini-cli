@@ -36,6 +36,8 @@ export enum RemoteMessageType {
   RESIZE_TERMINAL = 'RESIZE_TERMINAL',
   AUTH_SUBMIT = 'AUTH_SUBMIT',
   SESSION_STATE_REQUEST = 'SESSION_STATE_REQUEST',
+  HISTORY_REQUEST = 'HISTORY_REQUEST',
+  HISTORY_RESPONSE = 'HISTORY_RESPONSE',
 }
 
 export interface RemoteSuggestion {
@@ -52,6 +54,9 @@ export interface SystemStatus {
   geminiMdFileCount: number;
   skillsCount: number;
   mcpServers: Array<{ name: string; status: string }>;
+  cwd: string;
+  gitBranch: string | null;
+  platform: string;
 }
 
 export interface RemoteCommand {
@@ -64,6 +69,7 @@ export type RemoteOutgoingMessage =
   | {
       type: RemoteMessageType.SESSION_INIT;
       payload: {
+        apiVersion: number; // Current protocol version (e.g., 2)
         sessionId: string;
         history: HistoryItem[];
         config: { model: string | undefined; approvalMode: ApprovalMode };
@@ -117,6 +123,15 @@ export type RemoteOutgoingMessage =
   | {
       type: RemoteMessageType.AUTH_UPDATE;
       payload: { state: string; error: string | null };
+    }
+  | {
+      type: RemoteMessageType.HISTORY_RESPONSE;
+      payload: {
+        items: HistoryItem[];
+        offset: number;
+        limit: number;
+        total: number;
+      };
     };
 
 /** Messages received by CLI from Web Client */
@@ -140,18 +155,26 @@ export type RemoteIncomingMessage =
       type: RemoteMessageType.AUTH_SUBMIT;
       payload: { method?: string; apiKey?: string };
     }
-  | { type: RemoteMessageType.SESSION_STATE_REQUEST; payload: Record<string, never> };
+  | {
+      type: RemoteMessageType.SESSION_STATE_REQUEST;
+      payload: { apiVersion?: number };
+    }
+  | {
+      type: RemoteMessageType.HISTORY_REQUEST;
+      payload: { offset: number; limit: number };
+    };
 
 export class RemoteApiService extends EventEmitter {
   private wss: WebSocketServer | null = null;
   private clients = new Set<WebSocket>();
+  private clientVersions = new Map<WebSocket, number>();
 
   constructor(private port: number = 8080) {
     super();
   }
 
   start() {
-    this.wss = new WebSocketServer({ port: this.port });
+    this.wss = new WebSocketServer({ port: this.port, path: '/remote' });
     debugLogger.log(
       `Remote API Server started on ws://localhost:${this.port}/remote`,
     );
@@ -175,6 +198,7 @@ export class RemoteApiService extends EventEmitter {
 
       ws.on('close', () => {
         this.clients.delete(ws);
+        this.clientVersions.delete(ws);
         debugLogger.log('Remote client disconnected');
       });
     });
@@ -183,6 +207,11 @@ export class RemoteApiService extends EventEmitter {
   stop() {
     this.wss?.close();
     this.clients.clear();
+    this.clientVersions.clear();
+  }
+
+  getClientVersion(ws: WebSocket): number {
+    return this.clientVersions.get(ws) || 1;
   }
 
   private handleIncomingMessage(
@@ -208,10 +237,18 @@ export class RemoteApiService extends EventEmitter {
         this.emit('shell_input', message.payload.text);
         break;
       case RemoteMessageType.RESIZE_TERMINAL:
-        this.emit('resize_terminal', message.payload.cols, message.payload.rows);
+        this.emit(
+          'resize_terminal',
+          message.payload.cols,
+          message.payload.rows,
+        );
         break;
       case RemoteMessageType.SEARCH_REQUEST:
-        this.emit('search_request', message.payload.query, message.payload.type);
+        this.emit(
+          'search_request',
+          message.payload.query,
+          message.payload.type,
+        );
         break;
       case RemoteMessageType.AUTH_SUBMIT:
         this.emit(
@@ -221,7 +258,17 @@ export class RemoteApiService extends EventEmitter {
         );
         break;
       case RemoteMessageType.SESSION_STATE_REQUEST:
-        this.emit('session_state_request');
+        if (message.payload.apiVersion) {
+          this.clientVersions.set(_ws, message.payload.apiVersion);
+        }
+        this.emit('session_state_request', _ws);
+        break;
+      case RemoteMessageType.HISTORY_REQUEST:
+        this.emit(
+          'history_request',
+          message.payload.offset,
+          message.payload.limit,
+        );
         break;
       default:
         // Discriminated union ensures we cover all cases, but linter wants a default
@@ -334,7 +381,34 @@ export class RemoteApiService extends EventEmitter {
     }
 
     if (type === RemoteMessageType.SESSION_STATE_REQUEST) {
-      return true;
+      if (
+        !('payload' in message) ||
+        typeof message.payload !== 'object' ||
+        message.payload === null
+      ) {
+        return false;
+      }
+      const payload = message.payload as { apiVersion?: unknown };
+      return (
+        !('apiVersion' in payload) || typeof payload.apiVersion === 'number'
+      );
+    }
+
+    if (type === RemoteMessageType.HISTORY_REQUEST) {
+      if (
+        !('payload' in message) ||
+        typeof message.payload !== 'object' ||
+        message.payload === null
+      ) {
+        return false;
+      }
+      const payload = message.payload;
+      return (
+        'offset' in payload &&
+        typeof payload.offset === 'number' &&
+        'limit' in payload &&
+        typeof payload.limit === 'number'
+      );
     }
 
     return type === RemoteMessageType.STOP_GENERATION;

@@ -10,8 +10,6 @@ import {
   RemoteMessageType,
 } from '../services/RemoteApiService.js';
 import { WebSocket } from 'ws';
-import { ApprovalMode } from '@google/gemini-cli-core';
-import { StreamingState } from '../ui/types.js';
 
 describe('RemoteApiService Integration', () => {
   let service: RemoteApiService;
@@ -27,70 +25,39 @@ describe('RemoteApiService Integration', () => {
   });
 
   it('should allow a client to connect and receive SESSION_INIT', async () => {
-    const ws = new WebSocket(`ws://localhost:${PORT}`);
+    const ws = new WebSocket(`ws://localhost:${PORT}/remote`);
 
-    const messagePromise = new Promise<unknown>((resolve) => {
+    const messagePromise = new Promise<Record<string, unknown>>((resolve) => {
       ws.on('message', (data) => {
-        resolve(JSON.parse(data.toString()));
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>);
       });
     });
 
-    service.on('client_connected', (clientWs) => {
-      service.sendToClient(clientWs, {
-        type: RemoteMessageType.SESSION_INIT,
-        payload: {
-          sessionId: 'test-session',
-          history: [],
-          config: { model: 'test-model', approvalMode: ApprovalMode.DEFAULT },
-          streamingState: StreamingState.Idle,
-          activePtyId: null,
-          shellHistory: null,
-          status: {
-            model: 'test-model',
-            ramUsage: '0 MB',
-            contextTokens: 0,
-            geminiMdFileCount: 0,
-            skillsCount: 0,
-            mcpServers: [],
-          },
-          commands: [],
-          authState: 'authenticated',
-        },
-      });
-    });
+    await new Promise((resolve) => ws.on('open', resolve));
+
+    // Handshake
+    ws.send(
+      JSON.stringify({
+        type: RemoteMessageType.SESSION_STATE_REQUEST,
+        payload: { apiVersion: 1 },
+      }),
+    );
 
     const message = await messagePromise;
-    const isSessionInit = (
-      msg: unknown,
-    ): msg is { type: string; payload: { sessionId: string } } => {
-      if (typeof msg !== 'object' || msg === null) return false;
-      if (!('type' in msg) || typeof msg.type !== 'string') return false;
-      if (
-        !('payload' in msg) ||
-        typeof msg.payload !== 'object' ||
-        msg.payload === null
-      )
-        return false;
-      const payload = msg.payload;
-      return 'sessionId' in payload && typeof payload.sessionId === 'string';
-    };
-    if (isSessionInit(message)) {
-      expect(message.type).toBe(RemoteMessageType.SESSION_INIT);
-      expect(message.payload.sessionId).toBe('test-session');
-    } else {
-      throw new Error('Message is not a valid SESSION_INIT');
-    }
+    expect(message['type']).toBe(RemoteMessageType.SESSION_INIT);
+    const payload = message['payload'] as Record<string, unknown>;
+    expect(payload['apiVersion']).toBe(1);
 
     ws.close();
   });
 
   it('should emit send_prompt event when client sends SEND_PROMPT', async () => {
-    const ws = new WebSocket(`ws://localhost:${PORT}`);
+    const ws = new WebSocket(`ws://localhost:${PORT}/remote`);
 
     await new Promise((resolve) => ws.on('open', resolve));
 
     const promptPromise = new Promise<string>((resolve) => {
-      service.on('send_prompt', (text) => {
+      service.on('send_prompt', (text: string) => {
         resolve(text);
       });
     });

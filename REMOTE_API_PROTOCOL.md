@@ -1,53 +1,57 @@
-# Gemini Remote System: Full API Specification
+# Повна специфікація Gemini Remote API (v1.0)
 
-Цей документ є вичерпною специфікацією для реалізації клієнта (веб-інтерфейсу). 
-Система складається з двох рівнів: **Оркестратор (Rust)** та **Gemini CLI (Node.js)**.
-
----
-
-## 1. Рівень 1: Оркестратор (Сесії)
-**URL:** `ws://<host>:8000/ws`
-
-Оркестратор керує життєвим циклом процесів Gemini CLI. Всі повідомлення — JSON.
-
-### 1.1. Команди від Клієнта (Client -> Orchestrator)
-
-| Action | Payload | Опис |
-| :--- | :--- | :--- |
-| `START_SESSION` | `{ "dir": "string" }` | Запускає новий процес CLI у вказаній папці. |
-| `STOP_SESSION` | `{ "session_id": "uuid" }` | Вбиває процес CLI та закриває tmux-сесію. |
-| `CONNECT_SESSION`| `{ "session_id": "uuid" }` | Підписка на повідомлення від конкретної сесії. |
-| `DISCONNECT_SESSION`| `{ "session_id": "uuid" }` | Відписка від повідомлень сесії. |
-| `CLI_COMMAND` | `{ "session_id": "uuid", "payload": CLI_MSG }` | Відправка команди безпосередньо в CLI (див. Розділ 2.2). |
-
-### 1.2. Повідомлення від Оркестратора (Orchestrator -> Client)
-
-| Type | Payload | Опис |
-| :--- | :--- | :--- |
-| `SESSION_STARTED` | `{ "session_id": "uuid" }` | Сесія створена та готова до підключення. |
-| `SESSION_STOPPED` | `{ "session_id": "uuid" }` | Сесія була успішно завершена. |
-| `PROXY_MESSAGE` | `{ "session_id": "uuid", "message": CLI_MSG }` | Обгортка для будь-якого повідомлення від CLI (див. Розділ 2.1). |
-| `ERROR` | `{ "message": "string" }` | Помилка на рівні оркестратора. |
+Цей документ є вичерпним технічним стандартом для взаємодії з Gemini CLI
+дистанційно. Він містить опис протоколу, структур даних та сценаріїв
+використання, необхідних для створення клієнтів (веб-панелей, мобільних додатків
+або IDE плагінів).
 
 ---
 
-## 2. Рівень 2: Gemini CLI (Взаємодія)
-Ці повідомлення приходять всередині `PROXY_MESSAGE.message` (від сервера) або відправляються всередині `CLI_COMMAND.payload` (від клієнта).
+## 1. Архітектурний огляд
 
-### 2.1. Повідомлення від CLI (CLI -> Client)
+Система працює за дворівневою моделлю:
 
-#### SESSION_INIT
-Надсилається одразу після підключення до сесії. Містить весь початковий стан.
+1.  **Оркестратор (Rust)**: Керує запуском процесів CLI, tmux-сесіями та
+    маршрутизацією трафіку. Працює на порту `8000`.
+2.  **Gemini CLI (Node.js)**: Безпосередній "мозок", який надає WebSocket API
+    для керування конкретною сесією. Працює на порту `8080` (за замовчуванням).
+
+Всі повідомлення передаються у форматі **JSON** через **WebSocket**.
+
+---
+
+## 2. З'єднання та Авторизація
+
+**WebSocket URL:** `ws://<host>:<port>/remote`
+
+При підключенні CLI автоматично надсилає повідомлення `SESSION_INIT`. Якщо
+клієнт хоче отримати актуальний стан пізніше (наприклад, після перезавантаження
+сторінки), він має надіслати `SESSION_STATE_REQUEST`.
+
+---
+
+## 3. Вихідні повідомлення (CLI -> Client)
+
+Ці повідомлення надсилаються сервером для оновлення стану інтерфейсу.
+
+### 3.1. `SESSION_INIT`
+
+Надсилається при першому підключенні. Містить зріз останніх 50 повідомлень
+історії та повний системний статус.
+
 ```json
 {
   "type": "SESSION_INIT",
   "payload": {
+    "apiVersion": 1,
     "sessionId": "string",
-    "history": HistoryItem[],
-    "config": { "model": "string", "approvalMode": "default | yolo | plan | auto_edit" },
+    "history": HistoryItem[], // Останні 50 елементів
+    "config": {
+      "model": "string | undefined",
+      "approvalMode": "default | yolo | plan | auto_edit"
+    },
     "streamingState": "idle | responding | waiting_for_confirmation",
     "activePtyId": number | null,
-    "shellHistory": AnsiOutput | null,
     "status": SystemStatus,
     "commands": { "name": "string", "description": "string" }[],
     "authState": "authenticating | authenticated"
@@ -55,100 +59,149 @@
 }
 ```
 
-#### HISTORY_UPDATE
-Коли в чаті з'являється нове повідомлення, виклик інструменту або системний лог.
+### 3.2. `HISTORY_UPDATE`
+
+Надсилається реактивно, коли в чаті з'являється нове повідомлення, виклик
+інструменту або системний лог.
+
 ```json
 { "type": "HISTORY_UPDATE", "payload": { "item": HistoryItem } }
 ```
 
-#### SHELL_OUTPUT
-Структурований вивід внутрішнього термінала (PTY). Підтримує інкрементальні оновлення.
+### 3.3. `HISTORY_RESPONSE` (Пагінація)
+
+Відповідь на запит `HISTORY_REQUEST`. Дозволяє підвантажувати старі
+повідомлення.
+
 ```json
-{ "type": "SHELL_OUTPUT", "payload": { "chunk": string | AnsiOutput } }
+{
+  "type": "HISTORY_RESPONSE",
+  "payload": {
+    "items": HistoryItem[],
+    "offset": number, // Скільки повідомлень пропущено з кінця
+    "limit": number,  // Кількість запрошених повідомлень
+    "total": number   // Загальна кількість повідомлень у всій історії
+  }
+}
 ```
 
-#### STATUS_UPDATE
-Оновлення системних метрик (кожні кілька секунд або при зміні).
+### 3.4. `STATUS_UPDATE`
+
+Надсилається **реактивно** при будь-якій зміні стану (модель, токени, гілка Git,
+зміна CWD).
+
 ```json
 {
   "type": "STATUS_UPDATE",
   "payload": {
     "model": "string",
-    "ramUsage": "string (напр. '120.5 MB')",
+    "ramUsage": "string (напр. '125.4 MB')",
     "contextTokens": number,
     "geminiMdFileCount": number,
     "skillsCount": number,
-    "mcpServers": [ { "name": "string", "status": "connected | disabled" } ]
+    "mcpServers": [ { "name": "string", "status": "connected | disabled" } ],
+    "cwd": "string (повний шлях)",
+    "gitBranch": "string | null",
+    "platform": "linux | darwin | win32"
   }
 }
 ```
 
-#### CONFIRMATION_REQUEST
-Запит на дію користувача (дозвіл інструменту, квоти, вхід).
+### 3.5. `SHELL_OUTPUT`
+
+Сирі дані з активного термінала (PTY). Може містити ANSI-коди або структурований
+масив токенів.
+
+```json
+{ "type": "SHELL_OUTPUT", "payload": { "chunk": "string | AnsiOutput" } }
+```
+
+### 3.6. `SEARCH_RESPONSE`
+
+Результати автодоповнення для файлів або команд.
+
 ```json
 {
-  "type": "CONFIRMATION_REQUEST",
+  "type": "SEARCH_RESPONSE",
   "payload": {
-    "id": number,
-    "type": "tool_approval | file_permissions | loop_detection | quota | validation",
-    "prompt": "string",
-    "options": string[] // Варіанти вибору (напр. ["retry_later", "retry_once"])
+    "query": "string",
+    "suggestions": [
+      {
+        "label": "file.ts",
+        "value": "src/file.ts",
+        "type": "file | folder | command",
+        "description": "string"
+      }
+    ]
   }
 }
 ```
 
-### 2.2. Команди від Клієнта (Client -> CLI)
+---
 
-| Type | Payload | Опис |
-| :--- | :--- | :--- |
-| `SEND_PROMPT` | `{ "text": "string" }` | Відправка тексту або `/команди`. |
-| `SHELL_INPUT` | `{ "text": "string" }` | Відправка вводу (пароль, Enter) у активний PTY. |
-| `RESIZE_TERMINAL` | `{ "cols": number, "rows": number }` | Синхронізація розміру вікна термінала. |
-| `CONFIRMATION_RESPONSE` | `{ "id": number, "confirmed": bool, "choice": "string" }` | Відповідь на запит підтвердження. |
-| `AUTH_SUBMIT` | `{ "method": "google | api_key", "apiKey": "string" }` | Ініціація входу або відправка ключа. |
-| `SEARCH_REQUEST` | `{ "query": "string", "type": "at | slash" }` | Динамічний пошук файлів або команд. |
-| `STOP_GENERATION` | `null` | Переривання поточної відповіді Gemini. |
+## 4. Вхідні команди (Client -> CLI)
+
+Команди, які клієнт надсилає для керування системою.
+
+| Тип Команди             | Payload                                                   | Опис                                                              |
+| :---------------------- | :-------------------------------------------------------- | :---------------------------------------------------------------- | --------------------------------------------- |
+| `SEND_PROMPT`           | `{ "text": "string" }`                                    | Відправка повідомлення в чат або `/команди`.                      |
+| `STOP_GENERATION`       | `null`                                                    | Негайне переривання відповіді Gemini.                             |
+| `HISTORY_REQUEST`       | `{ "offset": number, "limit": number }`                   | Запит на отримання частини історії (для Lazy Loading).            |
+| `SHELL_INPUT`           | `{ "text": "string" }`                                    | Відправка вводу в активний термінал (PTY).                        |
+| `RESIZE_TERMINAL`       | `{ "cols": number, "rows": number }`                      | Синхронізація розміру вікна термінала для правильного рендерінгу. |
+| `SEARCH_REQUEST`        | `{ "query": "string", "type": "at                         | slash" }`                                                         | Запит на пошук файлів (`@`) або команд (`/`). |
+| `AUTH_SUBMIT`           | `{ "method": "google                                      | api_key", "apiKey": "string" }`                                   | Передача ключа або ініціація входу.           |
+| `CONFIRMATION_RESPONSE` | `{ "id": number, "confirmed": bool, "choice": "string" }` | Відповідь на запит підтвердження дії.                             |
+| `SESSION_STATE_REQUEST` | `null`                                                    | Вимога до CLI переслати повний `SESSION_INIT`.                    |
 
 ---
 
-## 3. Складні типи даних
+## 5. Детальні структури даних
 
-### 3.1. AnsiOutput (Термінал)
-Це масив рядків, де кожен рядок — масив токенів зі стилями.
-```typescript
-type AnsiOutput = AnsiToken[][];
-interface AnsiToken {
-  text: string;
-  fg: string;      // Hex кольору (напр. "#ffffff")
-  bg: string;      // Hex кольору
-  bold: boolean;
-  italic: boolean;
-  underline: boolean;
-  inverse: boolean; // Використовується також для відображення курсора
-}
-```
+### 5.1. HistoryItem
 
-### 3.2. HistoryItem (Історія)
-Основні типи повідомлень у масиві історії:
-- `user`: `{ "type": "user", "text": "..." }`
-- `gemini`: `{ "type": "gemini", "text": "..." }`
-- `thinking`: `{ "type": "thinking", "thought": { "summary": "..." } }`
-- `tool_group`: `{ "type": "tool_group", "tools": [ { "name": "...", "status": "Executing | Success | Error | Confirming" } ] }`
-- `error | warning | info`: `{ "type": "...", "text": "..." }`
+Кожен елемент історії має унікальний `id`. Основні типи:
+
+- **User/Gemini**: `{ "type": "user | gemini", "text": "..." }`
+- **Tool Group**: Містить масив викликів інструментів з їх **аргументами** та
+  статусом.
+  ```json
+  {
+    "type": "tool_group",
+    "tools": [
+      {
+        "callId": "string",
+        "name": "read_file",
+        "args": { "file_path": "src/main.ts" },
+        "status": "Success | Error | Executing",
+        "description": "Reading file..."
+      }
+    ]
+  }
+  ```
+- **Thinking**: `{ "type": "thinking", "thought": { "summary": "..." } }`
+- **System Messages**: `info`, `warning`, `error`.
 
 ---
 
-## 4. Сценарії використання (Recipes)
+## 6. Логіка пагінації (Рекомендації для Клієнта)
 
-### 4.1. Авторизація через Google
-1. Клієнт отримує `SESSION_INIT` з `authState: "authenticating"`.
-2. Клієнт відправляє `AUTH_SUBMIT { "method": "google" }`.
-3. CLI через `SHELL_OUTPUT` видає URL. Клієнт показує його як посилання.
-4. Користувач переходить, копіює код.
-5. Клієнт відправляє код через `SHELL_INPUT { "text": "CODE\n" }`.
+Для ефективної роботи з великою історією клієнт має:
 
-### 4.2. Робота з sudo
-1. Користувач відправляє `SEND_PROMPT { "text": "sudo apt update" }`.
-2. Клієнт отримує `SHELL_OUTPUT` з текстом `[sudo] password:`.
-3. Клієнт показує поле вводу пароля.
-4. Клієнт відправляє `SHELL_INPUT { "text": "password\n" }`.
+1.  Завантажити останні 50 повідомлень з `SESSION_INIT`.
+2.  При прокрутці вгору (scroll to top), надсилати `HISTORY_REQUEST`:
+    - `offset`: кількість повідомлень, які вже є в кеші клієнта.
+    - `limit`: бажана кількість нових повідомлень (рекомендується 20-30).
+3.  Отримані `items` з `HISTORY_RESPONSE` додавати в початок локального списку.
+
+---
+
+## 7. Безпека
+
+1.  **Strict Validation**: CLI ігнорує будь-які повідомлення з неправильною
+    структурою або типом даних.
+2.  **Explicit Activation**: Remote API не працює, якщо він не увімкнений явно
+    через налаштування або змінну оточення `GEMINI_REMOTE_ENABLED=true`.
+3.  **Confirmation Flow**: Навіть дистанційно, небезпечні дії (видалення файлів,
+    запуск shell) вимагають відповіді через `CONFIRMATION_RESPONSE`.
