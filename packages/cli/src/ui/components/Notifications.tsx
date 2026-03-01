@@ -36,7 +36,7 @@ const MAX_STARTUP_WARNING_SHOW_COUNT = 3;
 
 export const Notifications = () => {
   const { startupWarnings } = useAppContext();
-  const { initError, streamingState, updateInfo } = useUIState();
+  const { initError, streamingState, updateInfo, remoteApiPort } = useUIState();
 
   const isScreenReaderEnabled = useIsScreenReaderEnabled();
   const showInitError =
@@ -131,7 +131,8 @@ export const Notifications = () => {
     !showStartupWarnings &&
     !showInitError &&
     !updateInfo &&
-    !showScreenReaderNudge
+    !showScreenReaderNudge &&
+    !remoteApiPort
   ) {
     return null;
   }
@@ -146,6 +147,11 @@ export const Notifications = () => {
         </Text>
       )}
       {updateInfo && <UpdateNotification message={updateInfo.message} />}
+      {remoteApiPort && (
+        <UpdateNotification
+          message={`Remote API Server started on ws://127.0.0.1:${remoteApiPort}/remote`}
+        />
+      )}
       {showStartupWarnings && (
         <Box marginY={1} flexDirection="column">
           {visibleWarnings.map((warning, index) => (

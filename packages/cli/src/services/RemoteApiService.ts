@@ -41,6 +41,9 @@ export enum RemoteMessageType {
   OPEN_DIFF = 'OPEN_DIFF',
   DIFF_RESPONSE = 'DIFF_RESPONSE',
   SET_CONFIG = 'SET_CONFIG',
+  EXECUTE_COMMAND = 'EXECUTE_COMMAND',
+  CLEAR_HISTORY = 'CLEAR_HISTORY',
+  RESET_SESSION = 'RESET_SESSION',
 }
 
 export interface RemoteSuggestion {
@@ -103,8 +106,9 @@ export type RemoteOutgoingMessage =
           | 'file_permissions'
           | 'loop_detection'
           | 'quota'
-          | 'validation';
-        options?: string[];
+          | 'validation'
+          | 'auth_consent';
+        options?: string[] | Array<{ label: string; value: string }>;
       };
     }
   | {
@@ -177,7 +181,10 @@ export type RemoteIncomingMessage =
   | {
       type: RemoteMessageType.SET_CONFIG;
       payload: { approvalMode?: ApprovalMode };
-    };
+    }
+  | { type: RemoteMessageType.EXECUTE_COMMAND; payload: { command: string } }
+  | { type: RemoteMessageType.CLEAR_HISTORY }
+  | { type: RemoteMessageType.RESET_SESSION };
 
 export class RemoteApiService extends EventEmitter {
   private wss: WebSocketServer | null = null;
@@ -189,9 +196,18 @@ export class RemoteApiService extends EventEmitter {
   }
 
   start() {
-    this.wss = new WebSocketServer({ port: this.port, path: '/remote' });
+    this.wss = new WebSocketServer({
+      port: this.port,
+      // For security reasons, we strictly listen on 127.0.0.1. 
+      // This prevents accidental exposure to the network, which would be a 
+      // major security risk since the current Remote API protocol doesn't 
+      // implement authentication. Users requiring remote access must use a 
+      // secure proxy or relay layer that provides authentication and encryption.
+      host: '127.0.0.1',
+      path: '/remote',
+    });
     debugLogger.log(
-      `Remote API Server started on ws://localhost:${this.port}/remote`,
+      `Remote API Server started on ws://127.0.0.1:${this.port}/remote`,
     );
 
     this.wss.on('connection', (ws) => {
@@ -295,6 +311,15 @@ export class RemoteApiService extends EventEmitter {
         break;
       case RemoteMessageType.SET_CONFIG:
         this.emit('set_config', message.payload.approvalMode);
+        break;
+      case RemoteMessageType.EXECUTE_COMMAND:
+        this.emit('execute_command', message.payload.command);
+        break;
+      case RemoteMessageType.CLEAR_HISTORY:
+        this.emit('clear_history');
+        break;
+      case RemoteMessageType.RESET_SESSION:
+        this.emit('reset_session');
         break;
       default:
         // Discriminated union ensures we cover all cases, but linter wants a default
@@ -466,6 +491,25 @@ export class RemoteApiService extends EventEmitter {
         return false;
       }
       return true; // Simple check for now
+    }
+
+    if (type === RemoteMessageType.EXECUTE_COMMAND) {
+      if (
+        !('payload' in message) ||
+        typeof message.payload !== 'object' ||
+        message.payload === null
+      ) {
+        return false;
+      }
+      const payload = message.payload;
+      return 'command' in payload && typeof payload.command === 'string';
+    }
+
+    if (
+      type === RemoteMessageType.CLEAR_HISTORY ||
+      type === RemoteMessageType.RESET_SESSION
+    ) {
+      return true;
     }
 
     return type === RemoteMessageType.STOP_GENERATION;

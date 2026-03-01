@@ -22,12 +22,13 @@ import {
 } from 'ink';
 import { App } from './App.js';
 import { AppContext } from './contexts/AppContext.js';
-import { UIStateContext, type UIState } from './contexts/UIStateContext.js';
+import { useUIState, UIStateContext, type UIState } from './contexts/UIStateContext.js';
 import {
+  useUIActions,
   UIActionsContext,
   type UIActions,
 } from './contexts/UIActionsContext.js';
-import { ConfigContext } from './contexts/ConfigContext.js';
+import { useConfig, ConfigContext } from './contexts/ConfigContext.js';
 import {
   type HistoryItem,
   type HistoryItemWithoutId,
@@ -39,7 +40,7 @@ import {
 } from './types.js';
 import { checkPermissions } from './hooks/atCommandProcessor.js';
 import { MessageType, StreamingState } from './types.js';
-import { ToolActionsProvider } from './contexts/ToolActionsContext.js';
+import { ToolActionsProvider, useToolActions } from './contexts/ToolActionsContext.js';
 import {
   type StartupWarning,
   type EditorType,
@@ -875,6 +876,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
     () => {},
   );
   const [shortcutsHelpVisible, setShortcutsHelpVisible] = useState(false);
+  const [remoteApiPort, setRemoteApiPort] = useState<number | null>(null);
 
   const {
     cleanUiDetailsVisible,
@@ -2334,6 +2336,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
       isBackgroundShellListOpen,
       adminSettingsChanged,
       newAgents,
+      remoteApiPort,
       showIsExpandableHint,
       hintMode:
         config.isModelSteeringEnabled() &&
@@ -2461,6 +2464,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
       backgroundShells,
       adminSettingsChanged,
       newAgents,
+      remoteApiPort,
       showIsExpandableHint,
     ],
   );
@@ -2497,6 +2501,9 @@ Logging in with Google... Restarting Gemini CLI to continue.
       refreshStatic,
       handleFinalSubmit,
       handleClearScreen,
+      handleStopGeneration: () => {
+        cancelOngoingRequest();
+      },
       handleProQuotaChoice,
       handleValidationChoice,
       openSessionBrowser,
@@ -2535,6 +2542,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
         await runExitCleanup();
         process.exit(RELAUNCH_EXIT_CODE);
       },
+      setRemoteApiPort,
       handleNewAgentsSelect: async (choice: NewAgentsChoice) => {
         if (newAgents && choice === NewAgentsChoice.ACKNOWLEDGE) {
           const registry = config.getAgentRegistry();
@@ -2582,6 +2590,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
       refreshStatic,
       handleFinalSubmit,
       handleClearScreen,
+      cancelOngoingRequest,
       handleProQuotaChoice,
       handleValidationChoice,
       openSessionBrowser,
@@ -2603,13 +2612,12 @@ Logging in with Google... Restarting Gemini CLI to continue.
       setActiveBackgroundShellPid,
       setIsBackgroundShellListOpen,
       setAuthContext,
+      setRemoteApiPort,
       newAgents,
       config,
       historyManager,
     ],
   );
-
-  useRemoteApi(uiState, uiActions, config);
 
   if (authState === AuthState.AwaitingGoogleLoginRestart) {
     return (
@@ -2634,6 +2642,10 @@ Logging in with Google... Restarting Gemini CLI to continue.
             }}
           >
             <ToolActionsProvider config={config} toolCalls={allToolCalls}>
+              <RemoteApiOrchestrator
+                currentLoadingPhrase={currentLoadingPhrase}
+                elapsedTime={elapsedTime}
+              />
               <ShellFocusContext.Provider value={isFocused}>
                 <App key={`app-${forceRerenderKey}`} />
               </ShellFocusContext.Provider>
@@ -2643,4 +2655,23 @@ Logging in with Google... Restarting Gemini CLI to continue.
       </UIActionsContext.Provider>
     </UIStateContext.Provider>
   );
+};
+
+const RemoteApiOrchestrator = (props: {
+  currentLoadingPhrase: string | undefined;
+  elapsedTime: number;
+}) => {
+  const uiState = useUIState();
+  const uiActions = useUIActions();
+  const config = useConfig();
+  const toolActions = useToolActions();
+  useRemoteApi(
+    uiState,
+    uiActions,
+    config,
+    toolActions,
+    props.currentLoadingPhrase,
+    props.elapsedTime,
+  );
+  return null;
 };

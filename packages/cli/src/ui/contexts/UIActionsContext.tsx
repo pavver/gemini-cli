@@ -58,6 +58,8 @@ export interface UIActions {
   refreshStatic: () => void;
   handleFinalSubmit: (value: string) => Promise<void>;
   handleClearScreen: () => void;
+  handleStopGeneration: () => void;
+  setRemoteApiPort: (port: number | null) => void;
   handleProQuotaChoice: (
     choice: 'retry_later' | 'retry_once' | 'retry_always' | 'upgrade',
   ) => void;

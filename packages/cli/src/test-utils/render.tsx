@@ -514,6 +514,7 @@ const baseMockUiState = {
   },
   hintMode: false,
   hintBuffer: '',
+  remoteApiPort: null,
 };
 
 export const mockAppState: AppState = {
@@ -551,6 +552,8 @@ const mockUIActions: UIActions = {
   refreshStatic: vi.fn(),
   handleFinalSubmit: vi.fn(),
   handleClearScreen: vi.fn(),
+  handleStopGeneration: vi.fn(),
+  setRemoteApiPort: vi.fn(),
   handleProQuotaChoice: vi.fn(),
   handleValidationChoice: vi.fn(),
   setQueueErrorMessage: vi.fn(),

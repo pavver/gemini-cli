@@ -182,6 +182,7 @@ export interface UIState {
   isBackgroundShellListOpen: boolean;
   adminSettingsChanged: boolean;
   newAgents: AgentDefinition[] | null;
+  remoteApiPort: number | null;
   showIsExpandableHint: boolean;
   hintMode: boolean;
   hintBuffer: string;

@@ -97,6 +97,8 @@ export interface CliArgs {
   rawOutput: boolean | undefined;
   acceptRawOutputRisk: boolean | undefined;
   isCommand: boolean | undefined;
+  remote: boolean | undefined;
+  remotePort: number | undefined;
 }
 
 export async function parseArguments(
@@ -262,6 +264,17 @@ export async function parseArguments(
         .option('screen-reader', {
           type: 'boolean',
           description: 'Enable screen reader mode for accessibility.',
+        })
+        .option('remote', {
+          type: 'boolean',
+          description:
+            'Enable the Remote API WebSocket server (listens on 127.0.0.1)',
+          default: false,
+        })
+        .option('remote-port', {
+          type: 'number',
+          description: 'The port the Remote API server will listen on',
+          default: 8080,
         })
         .option('output-format', {
           alias: 'o',
@@ -841,6 +854,8 @@ export async function loadCliConfig(
     compressionThreshold: settings.model?.compressionThreshold,
     folderTrust,
     interactive,
+    remoteEnabled: argv.remote,
+    remotePort: argv.remotePort,
     trustedFolder,
     useBackgroundColor: settings.ui?.useBackgroundColor,
     useRipgrep: settings.tools?.useRipgrep,

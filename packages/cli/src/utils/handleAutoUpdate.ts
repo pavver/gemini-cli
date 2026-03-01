@@ -53,6 +53,7 @@ export function handleAutoUpdate(
   }
 
   updateEventEmitter.emit('update-received', {
+    ...info,
     message: combinedMessage,
   });
 

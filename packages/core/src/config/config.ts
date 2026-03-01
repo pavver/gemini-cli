@@ -528,6 +528,8 @@ export interface ConfigParameters {
   hooks?: { [K in HookEventName]?: HookDefinition[] };
   disabledHooks?: string[];
   projectHooks?: { [K in HookEventName]?: HookDefinition[] };
+  remoteEnabled?: boolean;
+  remotePort?: number;
   enableAgents?: boolean;
   enableEventDrivenScheduler?: boolean;
   skillsSupport?: boolean;
@@ -716,6 +718,8 @@ export class Config {
   private experiments: Experiments | undefined;
   private experimentsPromise: Promise<void> | undefined;
   private hookSystem?: HookSystem;
+  private readonly remoteEnabled: boolean;
+  private readonly remotePort: number;
   private readonly onModelChange: ((model: string) => void) | undefined;
   private readonly onReload:
     | (() => Promise<{
@@ -961,6 +965,8 @@ export class Config {
     this.experiments = params.experiments;
     this.onModelChange = params.onModelChange;
     this.onReload = params.onReload;
+    this.remoteEnabled = params.remoteEnabled ?? false;
+    this.remotePort = params.remotePort ?? 8080;
 
     if (params.contextFileName) {
       setGeminiMdFilename(params.contextFileName);
@@ -2011,6 +2017,14 @@ export class Config {
 
   getTelemetryUseCliAuth(): boolean {
     return this.telemetrySettings.useCliAuth ?? false;
+  }
+
+  getRemoteEnabled(): boolean {
+    return this.remoteEnabled;
+  }
+
+  getRemotePort(): number {
+    return this.remotePort;
   }
 
   getGeminiClient(): GeminiClient {
