@@ -12,6 +12,7 @@ import {
 import { WebSocket } from 'ws';
 import { ApprovalMode } from '@google/gemini-cli-core';
 import { StreamingState, type HistoryItem } from '../ui/types.js';
+import os from 'node:os';
 
 describe('RemoteApiService Protocol v2 Integration', () => {
   let service: RemoteApiService;
@@ -42,7 +43,8 @@ describe('RemoteApiService Protocol v2 Integration', () => {
             mcpServers: [],
             cwd: '/test/path',
             gitBranch: 'main',
-            platform: 'linux',
+            platform: os.platform(),
+            activePtyId: null,
           },
           commands: [],
           authState: 'authenticated',
@@ -90,9 +92,9 @@ describe('RemoteApiService Protocol v2 Integration', () => {
     );
 
     const msg = await messagePromise;
-     
+
     const payload = msg['payload'] as Record<string, unknown>;
-     
+
     const status = payload['status'] as Record<string, unknown>;
     expect(status['cwd']).toBe('/test/path');
     expect(status['gitBranch']).toBe('main');
@@ -202,7 +204,6 @@ describe('RemoteApiService Protocol v2 Integration', () => {
     service.broadcast({
       type: RemoteMessageType.HISTORY_RESPONSE,
       payload: {
-         
         items: [
           { id: 1, type: 'user', text: 'hello' } as unknown as HistoryItem,
         ],
@@ -213,7 +214,7 @@ describe('RemoteApiService Protocol v2 Integration', () => {
     });
 
     const msg = await messagePromise;
-     
+
     const payload = msg['payload'] as Record<string, unknown>;
     expect(payload['total']).toBe(100);
     ws.close();

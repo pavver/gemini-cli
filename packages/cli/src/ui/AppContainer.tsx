@@ -22,7 +22,11 @@ import {
 } from 'ink';
 import { App } from './App.js';
 import { AppContext } from './contexts/AppContext.js';
-import { useUIState, UIStateContext, type UIState } from './contexts/UIStateContext.js';
+import {
+  useUIState,
+  UIStateContext,
+  type UIState,
+} from './contexts/UIStateContext.js';
 import {
   useUIActions,
   UIActionsContext,
@@ -40,7 +44,10 @@ import {
 } from './types.js';
 import { checkPermissions } from './hooks/atCommandProcessor.js';
 import { MessageType, StreamingState } from './types.js';
-import { ToolActionsProvider, useToolActions } from './contexts/ToolActionsContext.js';
+import {
+  ToolActionsProvider,
+  useToolActions,
+} from './contexts/ToolActionsContext.js';
 import {
   type StartupWarning,
   type EditorType,
@@ -96,6 +103,7 @@ import { useSettingsCommand } from './hooks/useSettingsCommand.js';
 import { useModelCommand } from './hooks/useModelCommand.js';
 import { useSlashCommandProcessor } from './hooks/slashCommandProcessor.js';
 import { useVimMode } from './contexts/VimModeContext.js';
+import { useConfirmingTool } from './hooks/useConfirmingTool.js';
 import { useRemoteApi } from './hooks/useRemoteApi.js';
 import {
   useOverflowActions,
@@ -2665,11 +2673,13 @@ const RemoteApiOrchestrator = (props: {
   const uiActions = useUIActions();
   const config = useConfig();
   const toolActions = useToolActions();
+  const confirmingTool = useConfirmingTool();
   useRemoteApi(
     uiState,
     uiActions,
     config,
     toolActions,
+    confirmingTool,
     props.currentLoadingPhrase,
     props.elapsedTime,
   );

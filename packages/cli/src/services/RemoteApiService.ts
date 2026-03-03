@@ -6,10 +6,10 @@
 
 import { WebSocketServer, type WebSocket } from 'ws';
 import { EventEmitter } from 'node:events';
-import type {
-  HistoryItem,
+import {
+  type HistoryItem,
   StreamingState,
-  ThoughtSummary,
+  type ThoughtSummary,
 } from '../ui/types.js';
 import {
   debugLogger,
@@ -44,6 +44,33 @@ export enum RemoteMessageType {
   EXECUTE_COMMAND = 'EXECUTE_COMMAND',
   CLEAR_HISTORY = 'CLEAR_HISTORY',
   RESET_SESSION = 'RESET_SESSION',
+  SUBSCRIBE = 'SUBSCRIBE',
+  UNSUBSCRIBE = 'UNSUBSCRIBE',
+}
+
+/** Stable API types to decouple from internal CLI implementation */
+export type RemoteStreamingState =
+  | 'idle'
+  | 'responding'
+  | 'waiting_for_confirmation';
+
+export interface RemoteToolCall {
+  callId: string;
+  name: string;
+  args: string;
+  status: string;
+  description?: string;
+  result?: string;
+}
+
+export interface RemoteHistoryItem {
+  id: number;
+  type: string;
+  text?: string;
+  role?: 'user' | 'model' | 'system';
+  tools?: RemoteToolCall[];
+  thought?: { summary: string };
+  model?: string;
 }
 
 export interface RemoteSuggestion {
@@ -63,11 +90,77 @@ export interface SystemStatus {
   cwd: string;
   gitBranch: string | null;
   platform: string;
+  activePtyId: number | null;
 }
 
-export interface RemoteCommand {
-  name: string;
-  description: string;
+/** Mappers to convert internal types to stable API types */
+export function mapStreamingState(
+  internal: StreamingState,
+): RemoteStreamingState {
+  switch (internal) {
+    case StreamingState.Responding:
+      return 'responding';
+    case StreamingState.WaitingForConfirmation:
+      return 'waiting_for_confirmation';
+    default:
+      return 'idle';
+  }
+}
+
+export function mapHistoryItem(item: HistoryItem): RemoteHistoryItem {
+  const remote: RemoteHistoryItem = {
+    id: item.id,
+    type: item.type,
+  };
+
+  // Explicit mapping based on item type to ensure type safety
+  switch (item.type) {
+    case 'user':
+    case 'model':
+    case 'gemini':
+    case 'gemini_content':
+    case 'info':
+    case 'error':
+    case 'warning':
+      if ('text' in item) remote.text = item.text;
+      if ('role' in item && typeof item.role === 'string') {
+        const role = item.role;
+        if (role === 'user' || role === 'model' || role === 'system') {
+          remote.role = role;
+        }
+      }
+      if ('model' in item) remote.model = item.model;
+      break;
+
+    case 'thinking':
+      if ('thought' in item && item.thought) {
+        remote.thought = {
+          summary: item.thought.subject || item.thought.description,
+        };
+      }
+      break;
+
+    case 'tool_group':
+      if ('tools' in item && item.tools) {
+        remote.tools = item.tools.map((t) => ({
+          callId: t.callId,
+          name: t.name,
+          args: typeof t.args === 'string' ? t.args : JSON.stringify(t.args),
+          status: String(t.status),
+          description: t.description,
+          result:
+            typeof t.resultDisplay === 'string'
+              ? t.resultDisplay
+              : JSON.stringify(t.resultDisplay),
+        }));
+      }
+      break;
+
+    default:
+      break;
+  }
+
+  return remote;
 }
 
 /** Messages sent from CLI to Web Client */
@@ -77,24 +170,27 @@ export type RemoteOutgoingMessage =
       payload: {
         apiVersion: number;
         sessionId: string;
-        history: HistoryItem[];
-        config: { model: string | undefined; approvalMode: ApprovalMode };
-        streamingState: StreamingState;
+        history: RemoteHistoryItem[];
+        config: { model: string | undefined; approvalMode: string };
+        streamingState: RemoteStreamingState;
         activePtyId: number | null;
         shellHistory: AnsiOutput | null;
         status: SystemStatus;
-        commands: RemoteCommand[];
+        commands: Array<{ name: string; description: string }>;
         authState: string;
       };
     }
-  | { type: RemoteMessageType.HISTORY_UPDATE; payload: { item: HistoryItem } }
+  | {
+      type: RemoteMessageType.HISTORY_UPDATE;
+      payload: { item: RemoteHistoryItem };
+    }
   | {
       type: RemoteMessageType.THOUGHT_STREAM;
       payload: { thought: ThoughtSummary; isComplete: boolean };
     }
   | {
       type: RemoteMessageType.STREAMING_STATE;
-      payload: { state: StreamingState };
+      payload: { state: RemoteStreamingState };
     }
   | {
       type: RemoteMessageType.CONFIRMATION_REQUEST;
@@ -103,6 +199,8 @@ export type RemoteOutgoingMessage =
         prompt: string;
         type:
           | 'tool_approval'
+          | 'command_approval'
+          | 'extension_update'
           | 'file_permissions'
           | 'loop_detection'
           | 'quota'
@@ -121,7 +219,11 @@ export type RemoteOutgoingMessage =
     }
   | {
       type: RemoteMessageType.TOAST;
-      payload: { message: string; severity: 'info' | 'warning' | 'error' };
+      payload: {
+        id: number;
+        message: string;
+        severity: 'info' | 'warning' | 'error';
+      };
     }
   | {
       type: RemoteMessageType.SEARCH_RESPONSE;
@@ -184,12 +286,15 @@ export type RemoteIncomingMessage =
     }
   | { type: RemoteMessageType.EXECUTE_COMMAND; payload: { command: string } }
   | { type: RemoteMessageType.CLEAR_HISTORY }
-  | { type: RemoteMessageType.RESET_SESSION };
+  | { type: RemoteMessageType.RESET_SESSION }
+  | { type: RemoteMessageType.SUBSCRIBE; payload: { topic: string } }
+  | { type: RemoteMessageType.UNSUBSCRIBE; payload: { topic: string } };
 
 export class RemoteApiService extends EventEmitter {
   private wss: WebSocketServer | null = null;
   private clients = new Set<WebSocket>();
   private clientVersions = new Map<WebSocket, number>();
+  private subscriptions = new Map<WebSocket, Set<string>>();
 
   constructor(private port: number = 8080) {
     super();
@@ -198,11 +303,6 @@ export class RemoteApiService extends EventEmitter {
   start() {
     this.wss = new WebSocketServer({
       port: this.port,
-      // For security reasons, we strictly listen on 127.0.0.1. 
-      // This prevents accidental exposure to the network, which would be a 
-      // major security risk since the current Remote API protocol doesn't 
-      // implement authentication. Users requiring remote access must use a 
-      // secure proxy or relay layer that provides authentication and encryption.
       host: '127.0.0.1',
       path: '/remote',
     });
@@ -212,6 +312,11 @@ export class RemoteApiService extends EventEmitter {
 
     this.wss.on('connection', (ws) => {
       this.clients.add(ws);
+      // Default subscriptions for every new client
+      this.subscriptions.set(
+        ws,
+        new Set(['status', 'toasts', 'auth', 'history', 'confirmations']),
+      );
       debugLogger.log('Remote client connected');
 
       this.emit('client_connected', ws);
@@ -230,6 +335,7 @@ export class RemoteApiService extends EventEmitter {
       ws.on('close', () => {
         this.clients.delete(ws);
         this.clientVersions.delete(ws);
+        this.subscriptions.delete(ws);
         debugLogger.log('Remote client disconnected');
       });
     });
@@ -239,6 +345,7 @@ export class RemoteApiService extends EventEmitter {
     this.wss?.close();
     this.clients.clear();
     this.clientVersions.clear();
+    this.subscriptions.clear();
   }
 
   getClientVersion(ws: WebSocket): number {
@@ -246,10 +353,16 @@ export class RemoteApiService extends EventEmitter {
   }
 
   private handleIncomingMessage(
-    _ws: WebSocket,
+    ws: WebSocket,
     message: RemoteIncomingMessage,
   ): void {
     switch (message.type) {
+      case RemoteMessageType.SUBSCRIBE:
+        this.subscriptions.get(ws)?.add(message.payload.topic);
+        break;
+      case RemoteMessageType.UNSUBSCRIBE:
+        this.subscriptions.get(ws)?.delete(message.payload.topic);
+        break;
       case RemoteMessageType.SEND_PROMPT:
         this.emit('send_prompt', message.payload.text);
         break;
@@ -290,9 +403,9 @@ export class RemoteApiService extends EventEmitter {
         break;
       case RemoteMessageType.SESSION_STATE_REQUEST:
         if (message.payload.apiVersion) {
-          this.clientVersions.set(_ws, message.payload.apiVersion);
+          this.clientVersions.set(ws, message.payload.apiVersion);
         }
-        this.emit('session_state_request', _ws);
+        this.emit('session_state_request', ws);
         break;
       case RemoteMessageType.HISTORY_REQUEST:
         this.emit(
@@ -322,7 +435,6 @@ export class RemoteApiService extends EventEmitter {
         this.emit('reset_session');
         break;
       default:
-        // Discriminated union ensures we cover all cases, but linter wants a default
         break;
     }
   }
@@ -338,181 +450,69 @@ export class RemoteApiService extends EventEmitter {
       return false;
     }
 
-    const type = (message as { type: unknown }).type;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+    const msg = message as { type: RemoteMessageType; payload?: unknown };
+    const type = msg.type;
+    const payload = msg.payload;
+
+    const isRecord = (val: unknown): val is Record<string, unknown> =>
+      typeof val === 'object' && val !== null;
+
+    if (
+      type === RemoteMessageType.SUBSCRIBE ||
+      type === RemoteMessageType.UNSUBSCRIBE
+    ) {
+      return isRecord(payload) && typeof payload['topic'] === 'string';
+    }
 
     if (type === RemoteMessageType.SEND_PROMPT) {
-      if (
-        !('payload' in message) ||
-        typeof message.payload !== 'object' ||
-        message.payload === null
-      ) {
-        return false;
-      }
-      const payload = message.payload;
-      return 'text' in payload && typeof payload.text === 'string';
+      return isRecord(payload) && typeof payload['text'] === 'string';
     }
 
     if (type === RemoteMessageType.CONFIRMATION_RESPONSE) {
-      if (
-        !('payload' in message) ||
-        typeof message.payload !== 'object' ||
-        message.payload === null
-      ) {
-        return false;
-      }
-      const payload = message.payload;
+      if (!isRecord(payload)) return false;
       return (
-        'id' in payload &&
-        'confirmed' in payload &&
-        typeof payload.id === 'number' &&
-        typeof payload.confirmed === 'boolean' &&
-        (!('choice' in payload) || typeof payload.choice === 'string')
+        typeof payload['id'] === 'number' &&
+        typeof payload['confirmed'] === 'boolean'
       );
     }
 
     if (type === RemoteMessageType.SHELL_INPUT) {
-      if (
-        !('payload' in message) ||
-        typeof message.payload !== 'object' ||
-        message.payload === null
-      ) {
-        return false;
-      }
-      const payload = message.payload;
-      return 'text' in payload && typeof payload.text === 'string';
+      return isRecord(payload) && typeof payload['text'] === 'string';
     }
 
     if (type === RemoteMessageType.RESIZE_TERMINAL) {
-      if (
-        !('payload' in message) ||
-        typeof message.payload !== 'object' ||
-        message.payload === null
-      ) {
-        return false;
-      }
-      const payload = message.payload;
+      if (!isRecord(payload)) return false;
       return (
-        'cols' in payload &&
-        typeof payload.cols === 'number' &&
-        'rows' in payload &&
-        typeof payload.rows === 'number'
+        typeof payload['cols'] === 'number' &&
+        typeof payload['rows'] === 'number'
       );
     }
 
     if (type === RemoteMessageType.SEARCH_REQUEST) {
-      if (
-        !('payload' in message) ||
-        typeof message.payload !== 'object' ||
-        message.payload === null
-      ) {
-        return false;
-      }
-      const payload = message.payload;
+      if (!isRecord(payload)) return false;
       return (
-        'query' in payload &&
-        typeof payload.query === 'string' &&
-        'type' in payload &&
-        (payload.type === 'at' || payload.type === 'slash')
+        typeof payload['query'] === 'string' &&
+        (payload['type'] === 'at' || payload['type'] === 'slash')
       );
-    }
-
-    if (type === RemoteMessageType.AUTH_SUBMIT) {
-      if (
-        !('payload' in message) ||
-        typeof message.payload !== 'object' ||
-        message.payload === null
-      ) {
-        return false;
-      }
-      const payload = message.payload;
-      return (
-        (!('method' in payload) || typeof payload.method === 'string') &&
-        (!('apiKey' in payload) || typeof payload.apiKey === 'string')
-      );
-    }
-
-    if (type === RemoteMessageType.SESSION_STATE_REQUEST) {
-      if (
-        !('payload' in message) ||
-        typeof message.payload !== 'object' ||
-        message.payload === null
-      ) {
-        return false;
-      }
-      const payload = message.payload as { apiVersion?: unknown };
-      return (
-        !('apiVersion' in payload) || typeof payload.apiVersion === 'number'
-      );
-    }
-
-    if (type === RemoteMessageType.HISTORY_REQUEST) {
-      if (
-        !('payload' in message) ||
-        typeof message.payload !== 'object' ||
-        message.payload === null
-      ) {
-        return false;
-      }
-      const payload = message.payload;
-      return (
-        'offset' in payload &&
-        typeof payload.offset === 'number' &&
-        'limit' in payload &&
-        typeof payload.limit === 'number'
-      );
-    }
-
-    if (type === RemoteMessageType.DIFF_RESPONSE) {
-      if (
-        !('payload' in message) ||
-        typeof message.payload !== 'object' ||
-        message.payload === null
-      ) {
-        return false;
-      }
-      const payload = message.payload as {
-        filePath?: unknown;
-        accepted?: unknown;
-        content?: unknown;
-      };
-      return (
-        typeof payload.filePath === 'string' &&
-        typeof payload.accepted === 'boolean' &&
-        (!('content' in payload) || typeof payload.content === 'string')
-      );
-    }
-
-    if (type === RemoteMessageType.SET_CONFIG) {
-      if (
-        !('payload' in message) ||
-        typeof message.payload !== 'object' ||
-        message.payload === null
-      ) {
-        return false;
-      }
-      return true; // Simple check for now
-    }
-
-    if (type === RemoteMessageType.EXECUTE_COMMAND) {
-      if (
-        !('payload' in message) ||
-        typeof message.payload !== 'object' ||
-        message.payload === null
-      ) {
-        return false;
-      }
-      const payload = message.payload;
-      return 'command' in payload && typeof payload.command === 'string';
     }
 
     if (
-      type === RemoteMessageType.CLEAR_HISTORY ||
-      type === RemoteMessageType.RESET_SESSION
+      type === RemoteMessageType.AUTH_SUBMIT ||
+      type === RemoteMessageType.SESSION_STATE_REQUEST ||
+      type === RemoteMessageType.HISTORY_REQUEST ||
+      type === RemoteMessageType.DIFF_RESPONSE ||
+      type === RemoteMessageType.SET_CONFIG ||
+      type === RemoteMessageType.EXECUTE_COMMAND
     ) {
-      return true;
+      return typeof payload === 'object' && payload !== null;
     }
 
-    return type === RemoteMessageType.STOP_GENERATION;
+    return (
+      type === RemoteMessageType.STOP_GENERATION ||
+      type === RemoteMessageType.CLEAR_HISTORY ||
+      type === RemoteMessageType.RESET_SESSION
+    );
   }
 
   broadcast(message: RemoteOutgoingMessage) {
@@ -524,38 +524,65 @@ export class RemoteApiService extends EventEmitter {
     }
   }
 
+  publish(topic: string, message: RemoteOutgoingMessage) {
+    const data = JSON.stringify(message);
+    for (const client of this.clients) {
+      const subs = this.subscriptions.get(client);
+      if (
+        client.readyState === client.OPEN &&
+        (subs?.has(topic) || topic === 'all')
+      ) {
+        client.send(data);
+      }
+    }
+  }
+
   sendToClient(ws: WebSocket, message: RemoteOutgoingMessage) {
     if (ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify(message));
     }
   }
 
-  // Helper methods to broadcast specific updates
+  // Helper methods to publish to specific topics using stable API types
   broadcastHistoryUpdate(item: HistoryItem) {
-    this.broadcast({
+    this.publish('history', {
       type: RemoteMessageType.HISTORY_UPDATE,
-      payload: { item },
+      payload: { item: mapHistoryItem(item) },
     });
   }
 
   broadcastStreamingState(state: StreamingState) {
-    this.broadcast({
+    this.publish('status', {
       type: RemoteMessageType.STREAMING_STATE,
-      payload: { state },
+      payload: { state: mapStreamingState(state) },
     });
   }
 
   broadcastThought(thought: ThoughtSummary, isComplete: boolean = false) {
-    this.broadcast({
+    this.publish('thoughts', {
       type: RemoteMessageType.THOUGHT_STREAM,
       payload: { thought, isComplete },
     });
   }
 
-  broadcastShellOutput(chunk: string | AnsiOutput) {
-    this.broadcast({
+  broadcastShellOutput(pid: number, chunk: string | AnsiOutput) {
+    this.publish(`shell:${pid}`, {
       type: RemoteMessageType.SHELL_OUTPUT,
       payload: { chunk },
+    });
+  }
+
+  broadcastStatus(status: SystemStatus) {
+    this.publish('status', {
+      type: RemoteMessageType.STATUS_UPDATE,
+      payload: status,
+    });
+  }
+
+  broadcastToast(message: string, severity: 'info' | 'warning' | 'error') {
+    this.publish('toasts', {
+      type: RemoteMessageType.TOAST,
+      payload: { id: Date.now(), message, severity },
     });
   }
 }

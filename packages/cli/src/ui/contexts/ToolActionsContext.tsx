@@ -40,7 +40,7 @@ function hasLegacyCallback(
   );
 }
 
-interface ToolActionsContextValue {
+export interface ToolActionsContextValue {
   confirm: (
     callId: string,
     outcome: ToolConfirmationOutcome,

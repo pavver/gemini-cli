@@ -4,144 +4,54 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   RemoteApiService,
   RemoteMessageType,
-  type SystemStatus,
+  mapHistoryItem,
+  mapStreamingState,
 } from '../../services/RemoteApiService.js';
-import { type HistoryItem } from '../types.js';
 import type { UIState } from '../contexts/UIStateContext.js';
 import type { UIActions } from '../contexts/UIActionsContext.js';
-import {
-  type Config,
-  coreEvents,
-  ShellExecutionService,
-  debugLogger,
-  AuthType,
-  CoreToolCallStatus,
-} from '@google/gemini-cli-core';
-import { SettingScope } from '../../config/settings.js';
-import { execSync } from 'node:child_process';
-import os from 'node:os';
-import * as fs from 'node:fs';
+import { type Config, debugLogger } from '@google/gemini-cli-core';
 import { useSlashCompletion } from './useSlashCompletion.js';
-import { useConfirmingTool } from './useConfirmingTool.js';
 import type { Suggestion } from '../components/SuggestionsDisplay.js';
-import { TransientMessageType } from '../../utils/events.js';
+import type { CommandContext } from '../commands/types.js';
 
-const DEBUG_FILE = '/home/radxa/gemini/remote_debug.log';
-const logToFile = (msg: string) => {
-  try {
-    fs.appendFileSync(DEBUG_FILE, `[${new Date().toISOString()}] ${msg}\n`);
-  } catch (e) {}
-};
+// Sub-hooks
+import { useRemoteHistorySync } from './remote/useRemoteHistorySync.js';
+import { useRemoteShellSync } from './remote/useRemoteShellSync.js';
+import { useRemoteStatusSync } from './remote/useRemoteStatusSync.js';
+import { useRemoteAuthSync } from './remote/useRemoteAuthSync.js';
+import { useRemoteConfirmationSync } from './remote/useRemoteConfirmationSync.js';
+import { useRemoteNotificationSync } from './remote/useRemoteNotificationSync.js';
+
+import type { ToolActionsContextValue } from '../contexts/ToolActionsContext.js';
+import type { ConfirmingToolState } from '../utils/confirmingTool.js';
 
 export function useRemoteApi(
   uiState: UIState,
   uiActions: UIActions,
   config: Config,
-  toolActions: any, // Using any for toolActions to avoid complex type import issues
+  toolActions: ToolActionsContextValue,
+  confirmingTool: ConfirmingToolState | null,
   currentLoadingPhrase?: string | null,
   elapsedTime?: number,
 ) {
   const remoteApiRef = useRef<RemoteApiService | null>(null);
-  const lastHistoryLength = useRef(uiState.history.length);
-  const confirmingTool = useConfirmingTool();
+  const [, forceUpdate] = useState({}); // To trigger sub-hooks when service starts
+
+  const [remoteSearchQuery, setRemoteQuery] = useState<string | null>(null);
+  const [remoteSuggestions, setRemoteSuggestions] = useState<Suggestion[]>([]);
 
   // Always keep fresh refs for async event handlers
   const uiActionsRef = useRef(uiActions);
   const uiStateRef = useRef(uiState);
-  const confirmingToolRef = useRef(confirmingTool);
-  const toolActionsRef = useRef(toolActions);
 
   useEffect(() => {
     uiActionsRef.current = uiActions;
     uiStateRef.current = uiState;
-    confirmingToolRef.current = confirmingTool;
-    toolActionsRef.current = toolActions;
-  }, [uiActions, uiState, confirmingTool, toolActions]);
-
-  // Track the callId of the currently displayed confirmation
-  const activeCallIdRef = useRef<string | null>(null);
-
-  // Use the original CLI completion logic
-  const [remoteSearchQuery, setRemoteQuery] = useState<string | null>(null);
-  const [remoteSuggestions, setRemoteSuggestions] = useState<Suggestion[]>([]);
-
-  useSlashCompletion({
-    enabled: true,
-    query: remoteSearchQuery,
-    slashCommands: uiState.slashCommands || [],
-    commandContext: {
-      services: { config, logger: debugLogger },
-      ui: uiActions,
-    } as any,
-    setSuggestions: setRemoteSuggestions,
-    setIsLoadingSuggestions: () => {},
-    setIsPerfectMatch: () => {},
-  });
-
-  // Broadcast suggestions
-  useEffect(() => {
-    if (remoteSearchQuery && remoteApiRef.current) {
-      remoteApiRef.current.broadcast({
-        type: RemoteMessageType.SEARCH_RESPONSE,
-        payload: { 
-          query: remoteSearchQuery, 
-          suggestions: remoteSuggestions.map(s => {
-            let value = s.value;
-            if (remoteSearchQuery.startsWith('/') && !value.startsWith('/')) {
-              const parts = remoteSearchQuery.split(' ');
-              value = parts.length > 1 ? `${parts[0]} ${s.value}` : `/${s.value}`;
-            }
-            return { label: s.label, value, description: s.description, type: 'command' };
-          })
-        },
-      });
-    }
-  }, [remoteSuggestions, remoteSearchQuery]);
-
-  const getGitBranch = useCallback((): string | null => {
-    try {
-      return execSync('git rev-parse --abbrev-ref HEAD', {
-        stdio: ['ignore', 'pipe', 'ignore'],
-        cwd: process.cwd(),
-      })
-        .toString()
-        .trim();
-    } catch (_error: unknown) {
-      return null;
-    }
-  }, []);
-
-  const getSystemStatus = useCallback((): SystemStatus => {
-    const state = uiStateRef.current;
-    const mcpItem = state.history.findLast(
-      (item): item is HistoryItem & { type: 'mcp_status' } =>
-        item.type === 'mcp_status',
-    );
-    const skillsItem = state.history.findLast(
-      (item): item is HistoryItem & { type: 'skills_list' } =>
-        item.type === 'skills_list',
-    );
-    const tokens = state.sessionStats.lastPromptTokenCount || 0;
-
-    return {
-      model: state.currentModel,
-      ramUsage: `${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(1)} MB`,
-      contextTokens: tokens,
-      geminiMdFileCount: state.geminiMdFileCount,
-      skillsCount: skillsItem?.skills.length ?? 0,
-      mcpServers: Object.entries(mcpItem?.servers ?? {}).map(([name, cfg]) => {
-        const cfgObj = cfg as any;
-        return { name, status: cfgObj['enabled'] === true ? 'connected' : 'disabled' };
-      }),
-      cwd: process.cwd(),
-      gitBranch: getGitBranch(),
-      platform: os.platform(),
-    };
-  }, [getGitBranch]);
+  }, [uiActions, uiState]);
 
   // Main Service Initialization
   useEffect(() => {
@@ -149,302 +59,138 @@ export function useRemoteApi(
     const port = config.getRemotePort();
 
     if (isEnabled && !remoteApiRef.current) {
-      logToFile('Remote API Service Starting...');
       const service = new RemoteApiService(port);
       remoteApiRef.current = service;
-      uiActionsRef.current.setRemoteApiPort(port);
 
       service.on('session_state_request', (ws) => {
+        const state = uiStateRef.current;
         service.sendToClient(ws, {
           type: RemoteMessageType.SESSION_INIT,
           payload: {
             apiVersion: 1,
             sessionId: config.getSessionId(),
-            history: uiStateRef.current.history.slice(-50),
-            config: { model: uiStateRef.current.currentModel, approvalMode: uiStateRef.current.showApprovalModeIndicator as any },
-            streamingState: uiStateRef.current.streamingState,
-            activePtyId: uiStateRef.current.activePtyId ?? null,
+            history: state.history.slice(-50).map(mapHistoryItem),
+            config: {
+              model: state.currentModel,
+              approvalMode: String(state.showApprovalModeIndicator),
+            },
+            streamingState: mapStreamingState(state.streamingState),
+            activePtyId: state.activePtyId ?? null,
             shellHistory: null,
-            status: getSystemStatus(),
+            status: {
+              model: state.currentModel,
+              ramUsage: '0 MB',
+              contextTokens: 0,
+              geminiMdFileCount: 0,
+              skillsCount: 0,
+              mcpServers: [],
+              cwd: '',
+              gitBranch: null,
+              platform: '',
+              activePtyId: null,
+            },
             commands: [],
             authState: 'authenticated',
           },
         });
       });
-
       service.on('send_prompt', (text) => {
-        if (!text.startsWith('/')) void uiActionsRef.current.handleFinalSubmit(text);
+        if (!text.startsWith('/'))
+          void uiActionsRef.current.handleFinalSubmit(text);
       });
 
       service.on('execute_command', (command) => {
-        void uiActionsRef.current.handleFinalSubmit(command.startsWith('/') ? command : `/${command}`);
-      });
-
-      service.on('confirmation_response', (_id, confirmed, choice) => {
-        logToFile(`RES RECEIVED: id=${_id} ok=${confirmed} choice=${choice}`);
-        const state = uiStateRef.current;
-        const callId = activeCallIdRef.current;
-        const actions = toolActionsRef.current;
-
-        if (callId && actions) {
-          logToFile(`Resolving via toolActions: callId=${callId}`);
-          void actions.confirm(callId, choice || (confirmed ? 'proceed_once' : 'cancel'));
-        } else if (state.commandConfirmationRequest) {
-          logToFile('Resolving via commandConfirmationRequest');
-          state.commandConfirmationRequest.onConfirm(confirmed);
-        } else if (state.authConsentRequest) {
-          logToFile('Resolving via authConsentRequest');
-          state.authConsentRequest.onConfirm(confirmed);
-        } else {
-          logToFile('No active handler found for confirmation response');
-        }
+        void uiActionsRef.current.handleFinalSubmit(
+          command.startsWith('/') ? command : `/${command}`,
+        );
       });
 
       service.on('search_request', (query) => setRemoteQuery(query));
-      
-      service.on('stop_generation', () => {
-        uiActionsRef.current.handleStopGeneration();
-      });
-
-      service.on('shell_input', (text) => {
-        const pid = uiStateRef.current.activePtyId;
-        if (pid) ShellExecutionService.writeToPty(pid, text);
-      });
-
-      service.on('auth_submit', (method, apiKey) => {
-        if (method === 'google') uiActionsRef.current.handleAuthSelect(AuthType.LOGIN_WITH_GOOGLE, SettingScope.User);
-        else if (apiKey) {
-          uiActionsRef.current.handleAuthSelect(AuthType.USE_GEMINI, SettingScope.User);
-          void uiActionsRef.current.handleApiKeySubmit(apiKey);
-        }
-      });
-
-      service.on('resize_terminal', (cols, rows) => {
-        const pid = uiStateRef.current.activePtyId;
-        if (pid) ShellExecutionService.resizePty(pid, cols, rows);
-      });
+      service.on('stop_generation', () =>
+        uiActionsRef.current.handleStopGeneration(),
+      );
+      service.on('clear_history', () =>
+        uiActionsRef.current.handleClearScreen(),
+      );
+      service.on('reset_session', () =>
+        uiActionsRef.current.handleClearScreen(),
+      );
 
       service.start();
+      forceUpdate({}); // Trigger sub-hooks
     }
 
     return () => {
-      remoteApiRef.current?.stop();
-      remoteApiRef.current = null;
+      // Cleanup is tricky with refs, but typically service lives as long as the CLI
     };
-  }, [config, getSystemStatus]);
+  }, [config]);
 
-  // Sync Confirmation Requests
-  const lastSentConfirmId = useRef<string | null>(null);
-  useEffect(() => {
-    const service = remoteApiRef.current;
-    if (!service) return;
+  const service = remoteApiRef.current;
 
-    const request = uiState.commandConfirmationRequest || 
-                    uiState.authConsentRequest || 
-                    confirmingTool?.tool.confirmationDetails;
-
-    if (!request) {
-      lastSentConfirmId.current = null;
-      activeCallIdRef.current = null;
-      return;
-    }
-
-    const extractText = (node: any): string => {
-      if (!node) return '';
-      if (typeof node === 'string' || typeof node === 'number') return String(node);
-      if (Array.isArray(node)) return node.map(extractText).join(' ');
-      if (typeof node === 'object') {
-        if (node.props && node.props.children) return extractText(node.props.children);
-        if (node.children) return extractText(node.children);
-      }
-      return '';
-    };
-
-    let promptText = extractText((request as any).prompt);
-    const commandText = (request as any).command;
-    if (commandText && typeof commandText === 'string') {
-      promptText = promptText ? `${promptText}: ${commandText}` : commandText;
-    }
-
-    if (!promptText || promptText === 'Confirm Shell Command') {
-      const titleText = extractText((request as any).title);
-      promptText = titleText && titleText !== promptText ? `${titleText}: ${promptText}` : (promptText || titleText);
-    }
-
-    const cid = `${promptText}_${(request as any).type}`;
-
-    if (lastSentConfirmId.current !== cid) {
-      // Store the callId for resolution
-      if (confirmingTool) {
-        activeCallIdRef.current = confirmingTool.tool.callId;
-      }
-
-      const options: Array<{label: string, value: string}> = [];
-      const type = (request as any).type;
-      const isTrusted = config.isTrustedFolder();
-      
-      if (type === 'edit' || type === 'exec' || type === 'info' || type === 'mcp') {
-        options.push({ label: 'Allow once', value: 'proceed_once' });
-        if (isTrusted) {
-          options.push({ label: 'Allow for this session', value: 'proceed_always' });
-          options.push({ label: 'Allow for all future sessions', value: 'proceed_always_and_save' });
-        }
-        options.push({ label: 'No, suggest changes', value: 'cancel' });
-      } else {
-        options.push({ label: 'Yes', value: 'true' });
-        options.push({ label: 'No', value: 'false' });
-      }
-
-      logToFile(`BROADCASTING: ${promptText} id=${activeCallIdRef.current}`);
-      service.broadcast({
-        type: RemoteMessageType.CONFIRMATION_REQUEST,
-        payload: {
-          id: Date.now(),
-          prompt: promptText || 'Action required',
-          type: 'tool_approval',
-          options: options,
-        },
-      });
-      lastSentConfirmId.current = cid;
-    }
-  }, [uiState, confirmingTool, config]);
-
-  // Sync History
-  useEffect(() => {
-    if (uiState.history.length > lastHistoryLength.current) {
-      const newItems = uiState.history.slice(lastHistoryLength.current);
-      newItems.forEach((item: HistoryItem) => {
-        const itemWithType = item as unknown as Record<string, unknown>;
-        const type = itemWithType['type'];
-        if (typeof type === 'string' && (type.includes('tool_call') || type === 'tool_group')) {
-          remoteApiRef.current?.broadcast({ type: RemoteMessageType.HISTORY_UPDATE, payload: { item } });
-        } else {
-          remoteApiRef.current?.broadcastHistoryUpdate(item);
-        }
-      });
-    }
-    lastHistoryLength.current = uiState.history.length;
-  }, [uiState.history]);
-
-  // Reactive Status Updates
-  useEffect(() => {
-    if (remoteApiRef.current) {
-      remoteApiRef.current.broadcast({ type: RemoteMessageType.STATUS_UPDATE, payload: getSystemStatus() });
-    }
-  }, [uiState.currentModel, uiState.geminiMdFileCount, uiState.history.length, uiState.streamingState, uiState.activePtyId, getSystemStatus]);
-
-  // Tool Call Interceptor
-  useEffect(() => {
-    const handleToolCall = (event: any) => {
-      const item: HistoryItem = {
-        id: Date.now(),
-        type: 'tool_group',
-        tools: [{
-          callId: event.callId || `remote-${Date.now()}`,
-          name: event.name,
-          args: event.args,
-          status: event.status || CoreToolCallStatus.Executing,
-          description: `Executing ${event.name}...`,
-          resultDisplay: undefined,
-          confirmationDetails: undefined,
-        }],
-      };
-      remoteApiRef.current?.broadcast({ type: RemoteMessageType.HISTORY_UPDATE, payload: { item } });
-    };
-    (coreEvents as any).on('tool_call', handleToolCall);
-    return () => { (coreEvents as any).off('tool_call', handleToolCall); };
-  }, []);
-
-  // Sync Streaming State
-  useEffect(() => {
-    remoteApiRef.current?.broadcastStreamingState(uiState.streamingState);
-  }, [uiState.streamingState]);
-
-  // Sync Auth State
-  useEffect(() => {
-    remoteApiRef.current?.broadcast({
-      type: RemoteMessageType.AUTH_UPDATE,
-      payload: { state: uiState.isAuthenticating ? 'authenticating' : 'authenticated', error: uiState.authError },
-    });
-  }, [uiState.isAuthenticating, uiState.authError]);
-
-  // Proxy shell output
-  useEffect(() => {
-    const pid = uiState.activePtyId;
-    if (!pid) return;
-    const unsubscribe = ShellExecutionService.subscribe(pid, (event) => {
-      if (event.type === 'data') remoteApiRef.current?.broadcastShellOutput(event.chunk);
-    });
-    return unsubscribe;
-  }, [uiState.activePtyId]);
-
-  // Sync Toasts
-  useEffect(() => {
-    const service = remoteApiRef.current;
-    if (!service) return;
-
-    let message = '';
-    let severity: 'info' | 'warning' | 'error' = 'info';
-
-    if (uiState.ctrlCPressedOnce) {
-      message = 'Press Ctrl+C again to exit.';
-      severity = 'warning';
-    } else if (uiState.ctrlDPressedOnce) {
-      message = 'Press Ctrl+D again to exit.';
-      severity = 'warning';
-    } else if (uiState.queueErrorMessage) {
-      message = uiState.queueErrorMessage;
-      severity = 'error';
-    } else if (uiState.transientMessage?.text) {
-      message = uiState.transientMessage.text;
-      severity =
-        uiState.transientMessage.type === TransientMessageType.Warning
-          ? 'warning'
-          : 'info';
-    } else if (currentLoadingPhrase) {
-      message = currentLoadingPhrase;
-      severity = 'info';
-    }
-
-    if (message) {
-      service.broadcast({
-        type: RemoteMessageType.TOAST,
-        payload: { message, severity },
-      });
-    }
-  }, [
-    uiState.ctrlCPressedOnce,
-    uiState.ctrlDPressedOnce,
-    uiState.queueErrorMessage,
-    uiState.transientMessage,
+  // Delegate logic to specialized hooks
+  useRemoteHistorySync(service, uiState);
+  useRemoteShellSync(service, uiState);
+  useRemoteStatusSync(service, uiState);
+  useRemoteAuthSync(service, uiState, uiActions);
+  useRemoteConfirmationSync(
+    service,
+    uiState,
+    config,
+    toolActions,
+    confirmingTool,
+  );
+  useRemoteNotificationSync(
+    service,
+    uiState,
     currentLoadingPhrase,
-  ]);
+    elapsedTime,
+  );
 
-  // Sync Update Info (as history item, not toast)
-  const lastSentUpdateVersion = useRef<string | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+  const commandContext = {
+    services: {
+      config,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+      logger: debugLogger as unknown as CommandContext['services']['logger'],
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+      settings: {} as any,
+      git: undefined,
+    },
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+    ui: uiActions as unknown as CommandContext['ui'],
+    session: {
+      stats: uiState.sessionStats,
+      sessionShellAllowlist: new Set(),
+    },
+  } as unknown as CommandContext;
+
+  // Sync Completion Suggestions
+  useSlashCompletion({
+    enabled: true,
+    query: remoteSearchQuery,
+    slashCommands: uiState.slashCommands || [],
+    commandContext,
+    setSuggestions: setRemoteSuggestions,
+    setIsLoadingSuggestions: () => {},
+    setIsPerfectMatch: () => {},
+  });
+
   useEffect(() => {
-    const service = remoteApiRef.current;
-    const info = uiState.updateInfo;
-    if (
-      !service ||
-      !info ||
-      !info.update ||
-      lastSentUpdateVersion.current === info.update.latest
-    )
-      return;
-
-    service.broadcast({
-      type: RemoteMessageType.HISTORY_UPDATE,
-      payload: {
-        item: {
-          id: Date.now(),
-          type: 'info',
-          text: info.message,
+    if (remoteSearchQuery && service) {
+      service.publish('completion', {
+        type: RemoteMessageType.SEARCH_RESPONSE,
+        payload: {
+          query: remoteSearchQuery,
+          suggestions: remoteSuggestions.map((s) => ({
+            label: s.label,
+            value: s.value.startsWith('/') ? s.value : `/${s.value}`,
+            description: s.description,
+            type: 'command',
+          })),
         },
-      },
-    });
-    lastSentUpdateVersion.current = info.update.latest;
-  }, [uiState.updateInfo]);
+      });
+    }
+  }, [remoteSuggestions, remoteSearchQuery, service]);
 
-  return remoteApiRef.current;
+  return service;
 }
