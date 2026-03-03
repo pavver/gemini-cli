@@ -5,11 +5,8 @@
  */
 
 import { useEffect, useRef } from 'react';
-import type {
-  RemoteApiService} from '../../../services/RemoteApiService.js';
-import {
-  RemoteMessageType,
-} from '../../../services/RemoteApiService.js';
+import type { RemoteApiService } from '../../../services/RemoteApiService.js';
+import { RemoteMessageType } from '../../../services/RemoteApiService.js';
 import type { UIState } from '../../contexts/UIStateContext.js';
 import { type Config, ToolConfirmationOutcome } from '@google/gemini-cli-core';
 import type { ToolActionsContextValue } from '../../contexts/ToolActionsContext.js';
@@ -146,6 +143,17 @@ export function useRemoteConfirmationSync(
         );
       }
 
+      let fileDiff: string | undefined;
+      let fileName: string | undefined;
+
+      if (
+        confirmingTool?.tool.confirmationDetails &&
+        confirmingTool.tool.confirmationDetails.type === 'edit'
+      ) {
+        fileDiff = confirmingTool.tool.confirmationDetails.fileDiff;
+        fileName = confirmingTool.tool.confirmationDetails.fileName;
+      }
+
       service.publish('confirmations', {
         type: RemoteMessageType.CONFIRMATION_REQUEST,
         payload: {
@@ -153,6 +161,8 @@ export function useRemoteConfirmationSync(
           prompt: promptText,
           type: requestType,
           options,
+          fileDiff,
+          fileName,
         },
       });
     }

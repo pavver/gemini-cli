@@ -61,6 +61,8 @@ export interface RemoteToolCall {
   status: string;
   description?: string;
   result?: string;
+  fileDiff?: string;
+  fileName?: string;
 }
 
 export interface RemoteHistoryItem {
@@ -142,17 +144,34 @@ export function mapHistoryItem(item: HistoryItem): RemoteHistoryItem {
 
     case 'tool_group':
       if ('tools' in item && item.tools) {
-        remote.tools = item.tools.map((t) => ({
-          callId: t.callId,
-          name: t.name,
-          args: typeof t.args === 'string' ? t.args : JSON.stringify(t.args),
-          status: String(t.status),
-          description: t.description,
-          result:
-            typeof t.resultDisplay === 'string'
-              ? t.resultDisplay
-              : JSON.stringify(t.resultDisplay),
-        }));
+        remote.tools = item.tools.map((t) => {
+          const remoteTool: RemoteToolCall = {
+            callId: t.callId,
+            name: t.name,
+            args: typeof t.args === 'string' ? t.args : JSON.stringify(t.args),
+            status: String(t.status),
+            description: t.description,
+            result:
+              typeof t.resultDisplay === 'string'
+                ? t.resultDisplay
+                : JSON.stringify(t.resultDisplay),
+          };
+
+          const isRecord = (val: unknown): val is Record<string, unknown> =>
+            typeof val === 'object' && val !== null;
+
+          const rd = t.resultDisplay;
+          if (isRecord(rd) && 'fileDiff' in rd && 'fileName' in rd) {
+            const fileDiff = rd['fileDiff'];
+            const fileName = rd['fileName'];
+            if (typeof fileDiff === 'string' && typeof fileName === 'string') {
+              remoteTool.fileDiff = fileDiff;
+              remoteTool.fileName = fileName;
+            }
+          }
+
+          return remoteTool;
+        });
       }
       break;
 
@@ -207,6 +226,8 @@ export type RemoteOutgoingMessage =
           | 'validation'
           | 'auth_consent';
         options?: string[] | Array<{ label: string; value: string }>;
+        fileDiff?: string;
+        fileName?: string;
       };
     }
   | {

@@ -7,7 +7,7 @@
 import { useEffect, useCallback } from 'react';
 import type {
   RemoteApiService,
-  type SystemStatus,
+  SystemStatus,
 } from '../../../services/RemoteApiService.js';
 import type { UIState } from '../../contexts/UIStateContext.js';
 import type { HistoryItem } from '../../types.js';
