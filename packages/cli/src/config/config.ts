@@ -71,6 +71,10 @@ export interface CliArgs {
   prompt: string | undefined;
   promptInteractive: string | undefined;
 
+  remote: boolean | undefined;
+  remotePort: number | undefined;
+  remoteToken: string | undefined;
+
   yolo: boolean | undefined;
   approvalMode: string | undefined;
   policy: string[] | undefined;
@@ -142,6 +146,21 @@ export async function parseArguments(
           alias: 's',
           type: 'boolean',
           description: 'Run in sandbox?',
+        })
+        .option('remote', {
+          type: 'boolean',
+          description: 'Run Gemini CLI as a remote WebSocket server.',
+          default: false,
+        })
+        .option('remote-port', {
+          type: 'number',
+          description: 'Port for the remote WebSocket server.',
+          default: 8100,
+        })
+        .option('remote-token', {
+          type: 'string',
+          description:
+            'Security token for the remote WebSocket server. Clients must provide this token to stay connected.',
         })
 
         .option('yolo', {

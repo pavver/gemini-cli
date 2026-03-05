@@ -472,12 +472,17 @@ describe('gemini.tsx main function kitty protocol', () => {
       }),
     );
     vi.mocked(parseArguments).mockResolvedValue({
+      query: undefined,
       model: undefined,
       sandbox: undefined,
       debug: undefined,
       prompt: undefined,
       promptInteractive: undefined,
-      query: undefined,
+
+      remote: undefined,
+      remotePort: undefined,
+      remoteToken: undefined,
+
       yolo: undefined,
       approvalMode: undefined,
       policy: undefined,
