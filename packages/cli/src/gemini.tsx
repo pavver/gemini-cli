@@ -693,6 +693,24 @@ export async function main() {
       })),
     ];
 
+    // Add Remote API notification to startup warnings
+    if (argv.remote) {
+      if (argv.remoteToken) {
+        const port = argv.remotePort ?? 8100;
+        startupWarnings.push({
+          id: 'remote-api-status',
+          message: `Remote API is active at ws://127.0.0.1:${port} (token: ${argv.remoteToken})`,
+          priority: WarningPriority.High,
+        });
+      } else {
+        startupWarnings.push({
+          id: 'remote-api-error',
+          message: 'Remote API failed to start: --remote-token is mandatory!',
+          priority: WarningPriority.High,
+        });
+      }
+    }
+
     // Handle --resume flag
     let resumedSessionData: ResumedSessionData | undefined = undefined;
     if (argv.resume) {
@@ -716,6 +734,25 @@ export async function main() {
     }
 
     cliStartupHandle?.end();
+
+    // Handle --remote flag for Remote API WebSocket Server
+    if (argv.remote && argv.remoteToken) {
+      const { RemoteApiService } = await import(
+        './services/remote/RemoteApiService.js'
+      );
+      const remoteService = new RemoteApiService(
+        argv.remotePort ?? 8100,
+        argv.remoteToken,
+      );
+
+      await remoteService.start();
+
+      // Register cleanup to ensure server stops on exit
+      registerCleanup(async () => {
+        remoteService.stop();
+      });
+    }
+
     // Render UI, passing necessary config values. Check that there is no command line question.
     if (config.isInteractive()) {
       await startInteractiveUI(
