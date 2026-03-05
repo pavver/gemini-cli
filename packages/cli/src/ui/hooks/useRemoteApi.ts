@@ -11,6 +11,7 @@ import {
   mapHistoryItem,
   mapStreamingState,
 } from '../../services/RemoteApiService.js';
+import type { HistoryItem } from '../types.js';
 import type { UIState } from '../contexts/UIStateContext.js';
 import type { UIActions } from '../contexts/UIActionsContext.js';
 import { type Config, debugLogger } from '@google/gemini-cli-core';
@@ -130,6 +131,17 @@ export function useRemoteApi(
   // Delegate logic to specialized hooks
   useRemoteHistorySync(service, uiState);
   useRemoteShellSync(service, uiState);
+
+  // Sync Pending History Items
+  useEffect(() => {
+    if (!service) return;
+    const firstPending = uiState.pendingHistoryItems?.[0];
+    service.broadcastPendingHistoryItem(
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+      (firstPending as unknown as HistoryItem) || null,
+    );
+  }, [service, uiState.pendingHistoryItems]);
+
   useRemoteStatusSync(service, uiState);
   useRemoteAuthSync(service, uiState, uiActions);
   useRemoteConfirmationSync(

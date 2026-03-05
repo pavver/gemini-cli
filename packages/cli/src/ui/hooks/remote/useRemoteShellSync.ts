@@ -14,28 +14,21 @@ export function useRemoteShellSync(
   uiState: UIState,
 ) {
   // Sync Shell Output
-  useEffect(() => {
-    if (!service) return;
-
-    const pid = uiState.activePtyId;
-    if (!pid) return;
-
-    const unsubscribe = ShellExecutionService.subscribe(pid, (event) => {
-      if (event.type === 'data') {
-        service.broadcastShellOutput(pid, event.chunk);
-      }
-    });
-
-    return unsubscribe;
-  }, [uiState.activePtyId, service]);
+  useEffect(() => 
+    // This is now handled globally by RemoteApiService using ShellExecutionService.subscribeAll()
+    // to prevent race conditions and double-broadcasting.
+     () => {}
+  , [uiState.activePtyId, service]);
 
   // Handle Shell Input
   useEffect(() => {
     if (!service) return;
 
-    const handleShellInput = (text: string) => {
-      const pid = uiState.activePtyId;
-      if (pid) ShellExecutionService.writeToPty(pid, text);
+    const handleShellInput = (text: string, ptyId?: number) => {
+      const targetPid = ptyId || uiState.activePtyId;
+      if (targetPid) {
+        ShellExecutionService.writeToPty(targetPid, text);
+      }
     };
 
     const handleResizeTerminal = (cols: number, rows: number) => {

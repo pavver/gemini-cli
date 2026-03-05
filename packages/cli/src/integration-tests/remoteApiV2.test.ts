@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   RemoteApiService,
   RemoteMessageType,
+  mapHistoryItem,
 } from '../services/RemoteApiService.js';
 import { WebSocket } from 'ws';
 import { ApprovalMode } from '@google/gemini-cli-core';
@@ -205,7 +206,11 @@ describe('RemoteApiService Protocol v2 Integration', () => {
       type: RemoteMessageType.HISTORY_RESPONSE,
       payload: {
         items: [
-          { id: 1, type: 'user', text: 'hello' } as unknown as HistoryItem,
+          mapHistoryItem({
+            id: 1,
+            type: 'user',
+            text: 'hello',
+          } as unknown as HistoryItem),
         ],
         offset: 0,
         limit: 1,

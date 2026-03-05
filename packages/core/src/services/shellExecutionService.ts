@@ -5,6 +5,7 @@
  */
 
 import stripAnsi from 'strip-ansi';
+import { EventEmitter } from 'node:events';
 import type { PtyImplementation } from '../utils/getPty.js';
 import { getPty } from '../utils/getPty.js';
 import { spawn as cpSpawn, type ChildProcess } from 'node:child_process';
@@ -116,8 +117,10 @@ export type ShellOutputEvent =
   | {
       /** The event contains a chunk of output data. */
       type: 'data';
-      /** The decoded string chunk. */
+      /** The decoded string chunk (buffer snapshot). */
       chunk: string | AnsiOutput;
+      /** Incremental raw ANSI data for real-time terminal sync */
+      incremental?: string;
     }
   | {
       /** Signals that the output stream has been identified as binary. */
@@ -211,6 +214,7 @@ export class ShellExecutionService {
     number,
     Set<(event: ShellOutputEvent) => void>
   >();
+  private static globalEmitter = new EventEmitter();
   /**
    * Executes a shell command using `node-pty`, capturing all output and lifecycle events.
    *
@@ -286,11 +290,25 @@ export class ShellExecutionService {
     return { newBuffer: truncatedBuffer + chunk, truncated: true };
   }
 
+  /**
+   * Subscribe to all shell output events across all PTYs.
+   */
+  static subscribeAll(
+    callback: (pid: number, event: ShellOutputEvent) => void,
+  ) {
+    const handler = (data: { pid: number; event: ShellOutputEvent }) => {
+      callback(data.pid, data.event);
+    };
+    this.globalEmitter.on('output', handler);
+    return () => this.globalEmitter.off('output', handler);
+  }
+
   private static emitEvent(pid: number, event: ShellOutputEvent): void {
     const listeners = this.activeListeners.get(pid);
     if (listeners) {
       listeners.forEach((listener) => listener(event));
     }
+    this.globalEmitter.emit('output', { pid, event });
   }
 
   private static childProcessFallback(
@@ -760,6 +778,18 @@ export class ShellExecutionService {
                     return;
                   }
                   isWriting = true;
+
+                  // Emit incremental ANSI data immediately for terminal sync
+                  const incrementalEvent: ShellOutputEvent = {
+                    type: 'data',
+                    chunk: '',
+                    incremental: decodedChunk,
+                  };
+                  ShellExecutionService.emitEvent(
+                    ptyProcess.pid,
+                    incrementalEvent,
+                  );
+
                   headlessTerminal.write(decodedChunk, () => {
                     render();
                     isWriting = false;

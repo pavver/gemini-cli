@@ -33,6 +33,7 @@ export type CancelAllFn = (signal: AbortSignal) => void;
  */
 export type TrackedToolCall = ToolCall & {
   responseSubmittedToGemini?: boolean;
+  pid?: number;
 };
 
 // Narrowed types for specific statuses (used by useGeminiStream)
@@ -247,6 +248,7 @@ function adaptToolCalls(
   return coreCalls.map((coreCall): TrackedToolCall => {
     const prev = prevMap.get(coreCall.request.callId);
     const responseSubmittedToGemini = prev?.responseSubmittedToGemini ?? false;
+    const pid = ('pid' in coreCall ? coreCall.pid : undefined) ?? prev?.pid;
 
     let status = coreCall.status;
     // If a tool call has completed but scheduled a tail call, it is in a transitional
@@ -265,6 +267,7 @@ function adaptToolCalls(
       ...coreCall,
       status,
       responseSubmittedToGemini,
+      pid,
     } as TrackedToolCall;
   });
 }

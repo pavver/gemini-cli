@@ -63,6 +63,11 @@ export function mapToDisplay(
     let progress: number | undefined = undefined;
     let progressTotal: number | undefined = undefined;
 
+    // Propagate PTY ID if available, regardless of status
+    if ('pid' in call && call.pid !== undefined) {
+      ptyId = call.pid;
+    }
+
     switch (call.status) {
       case CoreToolCallStatus.Success:
         resultDisplay = call.response.resultDisplay;
@@ -79,7 +84,6 @@ export function mapToDisplay(
         break;
       case CoreToolCallStatus.Executing:
         resultDisplay = call.liveOutput;
-        ptyId = call.pid;
         progressMessage = call.progressMessage;
         progress = call.progress;
         progressTotal = call.progressTotal;
@@ -111,7 +115,7 @@ export function mapToDisplay(
       progressTotal,
       approvalMode: call.approvalMode,
       originalRequestName: call.request.originalRequestName,
-      args: call.request.args as Record<string, unknown>,
+      args: call.request.args,
     };
   });
 

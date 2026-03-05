@@ -5,10 +5,10 @@
  */
 
 import { useEffect, useRef } from 'react';
-import type {
-  RemoteApiService} from '../../../services/RemoteApiService.js';
+import type { RemoteApiService } from '../../../services/RemoteApiService.js';
 import {
   RemoteMessageType,
+  mapHistoryItem,
 } from '../../../services/RemoteApiService.js';
 import type { UIState } from '../../contexts/UIStateContext.js';
 import type { HistoryItem } from '../../types.js';
@@ -39,10 +39,12 @@ export function useRemoteHistorySync(
     const handleHistoryRequest = (offset: number, limit: number) => {
       // In a real implementation, we would use uiState.historyManager to fetch
       // but for now we slice from the current history
-      const items = uiState.history.slice(
+      const rawItems = uiState.history.slice(
         Math.max(0, uiState.history.length - offset - limit),
         uiState.history.length - offset,
       );
+
+      const items = rawItems.map(mapHistoryItem);
 
       service.broadcast({
         type: RemoteMessageType.HISTORY_RESPONSE,
