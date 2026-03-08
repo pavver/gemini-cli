@@ -1258,10 +1258,15 @@ Logging in with Google... Restarting Gemini CLI to continue.
   );
 
   const handleFinalSubmit = useCallback(
-    async (submittedValue: string) => {
+    async (submittedValue: string, isRemote: boolean = false) => {
       reset();
       // Explicitly hide the expansion hint and clear its x-second timer when a new turn begins.
       triggerExpandHint(null);
+
+      // Notify remote clients about the local user message
+      if (!isRemote) {
+        appEvents.emit(AppEvent.LocalPrompt, submittedValue);
+      }
       if (!constrainHeight) {
         setConstrainHeight(true);
         if (!isAlternateBuffer) {
@@ -1473,6 +1478,26 @@ Logging in with Google... Restarting Gemini CLI to continue.
     showPrivacyNotice,
     geminiClient,
   ]);
+
+  useEffect(() => {
+    const remotePromptListener = (prompt: string) => {
+      void handleFinalSubmit(prompt, true);
+    };
+    appEvents.on(AppEvent.RemotePrompt, remotePromptListener);
+    return () => {
+      appEvents.off(AppEvent.RemotePrompt, remotePromptListener);
+    };
+  }, [handleFinalSubmit]);
+
+  useEffect(() => {
+    const remoteCancelListener = () => {
+      void cancelOngoingRequest();
+    };
+    appEvents.on(AppEvent.RemoteCancel, remoteCancelListener);
+    return () => {
+      appEvents.off(AppEvent.RemoteCancel, remoteCancelListener);
+    };
+  }, [cancelOngoingRequest]);
 
   const [idePromptAnswered, setIdePromptAnswered] = useState(false);
   const [currentIDE, setCurrentIDE] = useState<IdeInfo | null>(null);

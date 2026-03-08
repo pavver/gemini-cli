@@ -23,6 +23,9 @@ export enum AppEvent {
   PasteTimeout = 'paste-timeout',
   TerminalBackground = 'terminal-background',
   TransientMessage = 'transient-message',
+  RemotePrompt = 'remote-prompt',
+  RemoteCancel = 'remote-cancel',
+  LocalPrompt = 'local-prompt',
 }
 
 export interface AppEvents {
@@ -32,6 +35,9 @@ export interface AppEvents {
   [AppEvent.PasteTimeout]: never[];
   [AppEvent.TerminalBackground]: [string];
   [AppEvent.TransientMessage]: [TransientMessagePayload];
+  [AppEvent.RemotePrompt]: [string];
+  [AppEvent.RemoteCancel]: never[];
+  [AppEvent.LocalPrompt]: [string];
 }
 
 export const appEvents = new EventEmitter<AppEvents>();
