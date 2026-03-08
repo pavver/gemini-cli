@@ -755,6 +755,9 @@ export async function main() {
       const remoteService = new RemoteApiService(
         argv.remotePort ?? 8100,
         argv.remoteToken,
+        coreEvents,
+        config.getMessageBus(),
+        sessionId,
       );
 
       await remoteService.start();

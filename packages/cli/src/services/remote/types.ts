@@ -108,8 +108,97 @@ export interface SlashConflictsEvent {
   conflicts: SlashConflict[];
 }
 
+import { ToolConfirmationOutcome } from '@google/gemini-cli-core';
+
+export { ToolConfirmationOutcome };
+
 export interface RamUsageState {
   rss: number;
   heapTotal: number;
   heapUsed: number;
+}
+
+// --- Actions (Incoming from Client) ---
+
+export type RemoteAction =
+  | AuthAction
+  | SubscribeAction
+  | UnsubscribeAction
+  | ChatSendAction
+  | ChatStopAction
+  | ConfirmReplyAction
+  | AskUserReplyAction;
+
+export interface AuthAction {
+  action: 'auth';
+  version: number;
+  token?: string;
+  sessionId?: string;
+}
+
+export interface SubscribeAction {
+  action: 'system:subscribe';
+  topics: string[];
+}
+
+export interface UnsubscribeAction {
+  action: 'system:unsubscribe';
+  topics: string[];
+}
+
+export interface ChatSendAction {
+  action: 'chat:send';
+  text: string;
+}
+
+export interface ChatStopAction {
+  action: 'chat:stop';
+}
+
+/**
+ * For standard tool confirmations (ToolConfirmationResponse)
+ * and UI consent requests (ConsentRequest).
+ */
+export interface ConfirmReplyAction {
+  action: 'confirm:reply';
+  correlationId: string;
+  confirmed: boolean;
+  outcome?: ToolConfirmationOutcome;
+}
+
+/**
+ * For complex multi-question confirmations (AskUserResponse).
+ */
+export interface AskUserReplyAction {
+  action: 'confirm:ask_user:reply';
+  correlationId: string;
+  answers: { [questionIndex: string]: string };
+  cancelled?: boolean;
+}
+
+/**
+ * Event topics used by the Remote API.
+ * This list is for documentation and internal reference.
+ *
+ * Bus events (relay from MessageBus):
+ * - event:bus:tool-confirmation-request
+ * - event:bus:tool-confirmation-response
+ * - event:bus:ask-user-request
+ * - event:bus:ask-user-response
+ * - event:bus:tool-calls-update
+ *
+ * UI Sync events:
+ * - event:confirm:active:resolved (for ConsentRequests)
+ * - event:chat:user_message (for terminal user input)
+ */
+
+// --- Internal Helper Types ---
+
+export function isRemoteAction(msg: unknown): msg is RemoteAction {
+  return (
+    typeof msg === 'object' &&
+    msg !== null &&
+    'action' in msg &&
+    typeof (msg as Record<string, unknown>).action === 'string'
+  );
 }

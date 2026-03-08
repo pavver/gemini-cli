@@ -303,6 +303,14 @@ export class RemoteEventAdapter {
   }
 
   /**
+   * Returns the cached state for a topic.
+   */
+  getState(topic: string): unknown | undefined {
+    const serialized = this.stateCache.get(topic);
+    return serialized ? JSON.parse(serialized) : undefined;
+  }
+
+  /**
    * Clean up listeners.
    */
   dispose(): void {
