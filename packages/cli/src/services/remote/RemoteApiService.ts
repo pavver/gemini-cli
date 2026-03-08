@@ -14,6 +14,11 @@ import {
   MessageBusType,
   CoreEvent,
   type ConsentRequestPayload,
+  type ChatRecordingService,
+  type MessageRecord,
+  type ToolCallRecord,
+  type TokensSummary,
+  type ThoughtSummary,
 } from '@google/gemini-cli-core';
 import {
   type RemoteAction,
@@ -23,6 +28,12 @@ import {
   type ChatSendAction,
   type ConfirmReplyAction,
   type AskUserReplyAction,
+  type ChatGetHistoryPageAction,
+  type RemoteMessageRecord,
+  type RemoteToolCallRecord,
+  type RemoteThoughtSummary,
+  type RemoteTokensSummary,
+  type RemotePart,
 } from './types.js';
 import { RemoteEventAdapter } from './RemoteEventAdapter.js';
 import { appEvents, AppEvent } from '../../utils/events.js';
@@ -54,6 +65,7 @@ export class RemoteApiService {
     private readonly remoteToken: string | undefined,
     private readonly coreEvents: CoreEventEmitter,
     private readonly messageBus: MessageBus,
+    private readonly chatRecordingService: ChatRecordingService,
     geminiSessionId?: string,
   ) {
     this.eventAdapter = new RemoteEventAdapter(coreEvents, geminiSessionId);
@@ -270,6 +282,9 @@ export class RemoteApiService {
       case 'chat:stop':
         this.handleChatStop();
         break;
+      case 'chat:get_history_page':
+        this.handleChatGetHistoryPage(session, message);
+        break;
       case 'confirm:reply':
         this.handleConfirmReply(message);
         break;
@@ -307,6 +322,234 @@ export class RemoteApiService {
 
   private handleChatStop() {
     appEvents.emit(AppEvent.RemoteCancel);
+  }
+
+  private handleChatGetHistoryPage(
+    session: RemoteSession,
+    action: ChatGetHistoryPageAction,
+  ) {
+    const conversation = this.chatRecordingService.getConversation();
+    if (!conversation) {
+      session.ws.send(
+        JSON.stringify({
+          type: 'response:chat:history',
+          correlationId: action.correlationId,
+          messages: [],
+          total: 0,
+        }),
+      );
+      return;
+    }
+
+    const allMessages = conversation.messages;
+    const total = allMessages.length;
+    let slicedMessages: MessageRecord[] = [];
+
+    if (action.sort === 'asc') {
+      slicedMessages = allMessages.slice(
+        action.offset,
+        action.offset + action.limit,
+      );
+    } else {
+      const end = Math.max(0, total - action.offset);
+      const start = Math.max(0, end - action.limit);
+      slicedMessages = allMessages.slice(start, end).reverse();
+    }
+
+    const messages = slicedMessages.map((m) => this.mapMessage(m));
+
+    session.ws.send(
+      JSON.stringify({
+        type: 'response:chat:history',
+        correlationId: action.correlationId,
+        messages,
+        total,
+      }),
+    );
+  }
+
+  private mapMessage(msg: MessageRecord): RemoteMessageRecord {
+    const remoteMsg: RemoteMessageRecord = {
+      id: msg.id,
+      timestamp: msg.timestamp,
+      type: msg.type,
+      content: this.mapContent(msg.content),
+    };
+
+    if (msg.displayContent) {
+      remoteMsg.displayContent = this.mapContent(msg.displayContent);
+    }
+
+    if (msg.type === 'gemini') {
+      if (msg.toolCalls) {
+        remoteMsg.toolCalls = msg.toolCalls.map((tc) => this.mapToolCall(tc));
+      }
+      if (msg.thoughts) {
+        remoteMsg.thoughts = msg.thoughts.map((t) => this.mapThought(t));
+      }
+      remoteMsg.tokens = this.mapTokens(msg.tokens);
+      remoteMsg.model = msg.model;
+    }
+
+    return remoteMsg;
+  }
+
+  private mapContent(content: unknown): RemotePart[] {
+    if (typeof content === 'string') {
+      return [{ text: content }];
+    }
+    if (Array.isArray(content)) {
+      const result: RemotePart[] = [];
+      for (const item of content) {
+        result.push(this.mapPart(item));
+      }
+      return result;
+    }
+    return [this.mapPart(content)];
+  }
+
+  private isObject(val: unknown): val is Record<string, unknown> {
+    return typeof val === 'object' && val !== null;
+  }
+
+  private mapPart(part: unknown): RemotePart {
+    if (typeof part === 'string') {
+      return { text: part };
+    }
+
+    if (this.isObject(part)) {
+      if (typeof part['text'] === 'string') {
+        return { text: part['text'] };
+      }
+
+      if (this.isObject(part['functionCall'])) {
+        const fc = part['functionCall'];
+        return {
+          functionCall: {
+            name: typeof fc['name'] === 'string' ? fc['name'] : '',
+            args: this.mapSafeRecord(fc['args']),
+          },
+        };
+      }
+
+      if (this.isObject(part['functionResponse'])) {
+        const fr = part['functionResponse'];
+        return {
+          functionResponse: {
+            name: typeof fr['name'] === 'string' ? fr['name'] : '',
+            response: this.mapSafeRecord(fr['response']),
+          },
+        };
+      }
+
+      if (this.isObject(part['inlineData'])) {
+        const id = part['inlineData'];
+        return {
+          inlineData: {
+            mimeType: typeof id['mimeType'] === 'string' ? id['mimeType'] : '',
+            data: typeof id['data'] === 'string' ? id['data'] : '',
+          },
+        };
+      }
+
+      if (this.isObject(part['fileData'])) {
+        const fd = part['fileData'];
+        return {
+          fileData: {
+            mimeType: typeof fd['mimeType'] === 'string' ? fd['mimeType'] : '',
+            fileUri: typeof fd['fileUri'] === 'string' ? fd['fileUri'] : '',
+          },
+        };
+      }
+
+      if (this.isObject(part['executableCode'])) {
+        const ec = part['executableCode'];
+        return {
+          executableCode: {
+            language: typeof ec['language'] === 'string' ? ec['language'] : '',
+            code: typeof ec['code'] === 'string' ? ec['code'] : '',
+          },
+        };
+      }
+
+      if (this.isObject(part['codeExecutionResult'])) {
+        const cer = part['codeExecutionResult'];
+        return {
+          codeExecutionResult: {
+            outcome: typeof cer['outcome'] === 'string' ? cer['outcome'] : '',
+            output: typeof cer['output'] === 'string' ? cer['output'] : '',
+          },
+        };
+      }
+    }
+
+    return { text: '[Unknown Part Type]' };
+  }
+
+  private mapSafeRecord(source: unknown): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    if (this.isObject(source)) {
+      for (const [key, value] of Object.entries(source)) {
+        if (
+          typeof value === 'string' ||
+          typeof value === 'number' ||
+          typeof value === 'boolean' ||
+          value === null
+        ) {
+          result[key] = value as unknown;
+        } else if (Array.isArray(value)) {
+          const arr: unknown[] = [];
+          for (const item of value) {
+            arr.push(this.isObject(item) ? this.mapSafeRecord(item) : item);
+          }
+          result[key] = arr as unknown;
+        } else if (this.isObject(value)) {
+          result[key] = this.mapSafeRecord(value);
+        }
+      }
+    }
+    return result;
+  }
+
+  private mapToolCall(tc: ToolCallRecord): RemoteToolCallRecord {
+    return {
+      id: tc.id,
+      name: tc.name,
+      args: this.mapSafeRecord(tc.args),
+      result: tc.result ? this.mapContent(tc.result) : undefined,
+      status: tc.status,
+      timestamp: tc.timestamp,
+      displayName: tc.displayName,
+      description: tc.description,
+    };
+  }
+
+  private mapThought(
+    t: ThoughtSummary & { timestamp: string },
+  ): RemoteThoughtSummary {
+    return {
+      subject: t.subject,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      summary: t.summary,
+      timestamp: t.timestamp,
+    };
+  }
+
+  private mapTokens(
+    tokens: TokensSummary | null | undefined,
+  ): RemoteTokensSummary | null {
+    if (!tokens) {
+      return null;
+    }
+    const result: RemoteTokensSummary = {
+      input: tokens.input,
+      output: tokens.output,
+      cached: tokens.cached,
+      thoughts: tokens.thoughts,
+      tool: tokens.tool,
+      total: tokens.total,
+    };
+    return result;
   }
 
   private handleConfirmReply(action: ConfirmReplyAction) {

@@ -23,6 +23,7 @@ import {
   type ConsentRequestPayload,
   type CoreEventEmitter,
   type MessageBus,
+  type ChatRecordingService,
 } from '@google/gemini-cli-core';
 import { appEvents, AppEvent } from '../../utils/events.js';
 
@@ -58,7 +59,18 @@ interface EventMessage extends BaseRemoteMessage {
   payload: Record<string, unknown>;
 }
 
-type RemoteMessage = AuthOkMessage | EventMessage | BaseRemoteMessage;
+interface HistoryResponseMessage extends BaseRemoteMessage {
+  type: 'response:chat:history';
+  correlationId: string;
+  messages: Array<Record<string, unknown>>;
+  total: number;
+}
+
+type RemoteMessage =
+  | AuthOkMessage
+  | EventMessage
+  | HistoryResponseMessage
+  | BaseRemoteMessage;
 
 describe('RemoteApiService - Full API Synchronization', () => {
   const PORT = 8131;
@@ -77,6 +89,10 @@ describe('RemoteApiService - Full API Synchronization', () => {
     publish: Mock;
     subscribe: Mock;
     unsubscribe: Mock;
+  };
+
+  let mockChatRecordingService: {
+    getConversation: Mock;
   };
 
   beforeEach(() => {
@@ -113,11 +129,49 @@ describe('RemoteApiService - Full API Synchronization', () => {
       }),
     };
 
+    mockChatRecordingService = {
+      getConversation: vi.fn(() => ({
+        messages: [
+          {
+            id: '1',
+            timestamp: '2026-03-07T12:00:00Z',
+            type: 'user',
+            content: 'Msg 1',
+          },
+          {
+            id: '2',
+            timestamp: '2026-03-07T12:01:00Z',
+            type: 'user',
+            content: 'Msg 2',
+          },
+          {
+            id: '3',
+            timestamp: '2026-03-07T12:02:00Z',
+            type: 'user',
+            content: 'Msg 3',
+          },
+          {
+            id: '4',
+            timestamp: '2026-03-07T12:03:00Z',
+            type: 'user',
+            content: 'Msg 4',
+          },
+          {
+            id: '5',
+            timestamp: '2026-03-07T12:04:00Z',
+            type: 'user',
+            content: 'Msg 5',
+          },
+        ],
+      })),
+    };
+
     service = new RemoteApiService(
       PORT,
       TOKEN,
       mockCoreEvents as unknown as CoreEventEmitter,
       mockMessageBus as unknown as MessageBus,
+      mockChatRecordingService as unknown as ChatRecordingService,
     );
   });
 
@@ -329,6 +383,58 @@ describe('RemoteApiService - Full API Synchronization', () => {
         }),
       ),
     );
+    ws.close();
+  });
+
+  it('handles chat:get_history_page (ASC)', async () => {
+    const { ws, messages } = await connectAndAuth();
+    ws.send(
+      JSON.stringify({
+        action: 'chat:get_history_page',
+        correlationId: 'hist-1',
+        limit: 2,
+        offset: 1,
+        sort: 'asc',
+      }),
+    );
+
+    await vi.waitFor(() => {
+      const resp = messages.find(
+        (m) => m.type === 'response:chat:history',
+      ) as HistoryResponseMessage;
+      expect(resp).toBeDefined();
+      expect(resp.correlationId).toBe('hist-1');
+      expect(resp.messages).toHaveLength(2);
+      expect(resp.messages[0].id).toBe('2');
+      expect(resp.messages[1].id).toBe('3');
+      expect(resp.total).toBe(5);
+    });
+    ws.close();
+  });
+
+  it('handles chat:get_history_page (DESC)', async () => {
+    const { ws, messages } = await connectAndAuth();
+    ws.send(
+      JSON.stringify({
+        action: 'chat:get_history_page',
+        correlationId: 'hist-2',
+        limit: 2,
+        offset: 1,
+        sort: 'desc',
+      }),
+    );
+
+    await vi.waitFor(() => {
+      const resp = messages.find(
+        (m) => m.type === 'response:chat:history',
+      ) as HistoryResponseMessage;
+      expect(resp).toBeDefined();
+      expect(resp.correlationId).toBe('hist-2');
+      expect(resp.messages).toHaveLength(2);
+      expect(resp.messages[0].id).toBe('4');
+      expect(resp.messages[1].id).toBe('3');
+      expect(resp.total).toBe(5);
+    });
     ws.close();
   });
 });

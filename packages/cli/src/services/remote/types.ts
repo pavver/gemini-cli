@@ -126,6 +126,7 @@ export type RemoteAction =
   | UnsubscribeAction
   | ChatSendAction
   | ChatStopAction
+  | ChatGetHistoryPageAction
   | ConfirmReplyAction
   | AskUserReplyAction;
 
@@ -155,6 +156,14 @@ export interface ChatStopAction {
   action: 'chat:stop';
 }
 
+export interface ChatGetHistoryPageAction {
+  action: 'chat:get_history_page';
+  correlationId: string;
+  limit: number;
+  offset: number;
+  sort: 'asc' | 'desc';
+}
+
 /**
  * For standard tool confirmations (ToolConfirmationResponse)
  * and UI consent requests (ConsentRequest).
@@ -175,6 +184,112 @@ export interface AskUserReplyAction {
   answers: { [questionIndex: string]: string };
   cancelled?: boolean;
 }
+
+// --- Content Types (Decoupled from Google GenAI SDK) ---
+
+export interface RemoteTextPart {
+  text: string;
+}
+
+export interface RemoteInlineDataPart {
+  inlineData: {
+    mimeType: string;
+    data: string;
+  };
+}
+
+export interface RemoteFunctionCallPart {
+  functionCall: {
+    name: string;
+    args: Record<string, unknown>;
+  };
+}
+
+export interface RemoteFunctionResponsePart {
+  functionResponse: {
+    name: string;
+    response: Record<string, unknown>;
+  };
+}
+
+export interface RemoteFileDataPart {
+  fileData: {
+    mimeType: string;
+    fileUri: string;
+  };
+}
+
+export interface RemoteExecutableCodePart {
+  executableCode: {
+    language: string;
+    code: string;
+  };
+}
+
+export interface RemoteCodeExecutionResultPart {
+  codeExecutionResult: {
+    outcome: string;
+    output: string;
+  };
+}
+
+export type RemotePart =
+  | RemoteTextPart
+  | RemoteInlineDataPart
+  | RemoteFunctionCallPart
+  | RemoteFunctionResponsePart
+  | RemoteFileDataPart
+  | RemoteExecutableCodePart
+  | RemoteCodeExecutionResultPart;
+
+// --- Responses (Outgoing, RPC-style) ---
+
+export interface RemoteTokensSummary {
+  input: number;
+  output: number;
+  cached: number;
+  thoughts?: number;
+  tool?: number;
+  total: number;
+}
+
+export interface RemoteThoughtSummary {
+  subject: string;
+  summary: string;
+  timestamp: string;
+}
+
+export interface RemoteToolCallRecord {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  result?: RemotePart[];
+  status: string;
+  timestamp: string;
+  displayName?: string;
+  description?: string;
+}
+
+export interface RemoteMessageRecord {
+  id: string;
+  timestamp: string;
+  type: 'user' | 'gemini' | 'info' | 'error' | 'warning';
+  content: RemotePart[];
+  displayContent?: RemotePart[];
+  toolCalls?: RemoteToolCallRecord[];
+  thoughts?: RemoteThoughtSummary[];
+  tokens?: RemoteTokensSummary | null;
+  model?: string;
+}
+
+export interface HistoryResponse {
+  type: 'response:chat:history';
+  correlationId: string;
+  messages: RemoteMessageRecord[];
+  total: number;
+}
+
+// --- Internal Helper Types ---
 
 /**
  * Event topics used by the Remote API.

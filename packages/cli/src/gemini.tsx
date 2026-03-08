@@ -757,6 +757,7 @@ export async function main() {
         argv.remoteToken,
         coreEvents,
         config.getMessageBus(),
+        config.getChatRecordingService(),
         sessionId,
       );
 
