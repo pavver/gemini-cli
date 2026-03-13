@@ -22,7 +22,7 @@ import {
   type EditorSelectedPayload,
   type ThoughtPayload,
   type CoreEvents,
-  type McpClient,
+  type Config,
 } from '@google/gemini-cli-core';
 import { appEvents, AppEvent } from '../../utils/events.js';
 import type {
@@ -56,16 +56,6 @@ export interface RemoteEventMessage {
 }
 
 /**
- * Union of all possible event handlers to maintain type safety when storing them.
- */
-type AnyEventHandler = {
-  [K in keyof CoreEvents]: {
-    event: K;
-    handler: (...args: CoreEvents[K]) => void;
-  };
-}[keyof CoreEvents];
-
-/**
  * Adapter to translate internal CoreEvents into Remote API topics.
  * Performs explicit mapping to stable "Simple Types" to ensure protocol stability.
  * Implements state-diffing to minimize traffic.
@@ -73,13 +63,14 @@ type AnyEventHandler = {
 export class RemoteEventAdapter {
   private readonly stateCache = new Map<string, string>();
   private onEmitCallback?: (message: RemoteEventMessage) => void;
-  private readonly handlers: AnyEventHandler[] = [];
+  private readonly unsubscribeFunctions: Array<() => void> = [];
   private activeHooksCount = 0;
   private isGenerating = false;
   private readonly sessionChangedListener: (newId: string) => void;
 
   constructor(
     private readonly coreEvents: CoreEventEmitter,
+    private readonly config: Config,
     private geminiSessionId?: string,
   ) {
     this.setupSubscriptions();
@@ -105,6 +96,9 @@ export class RemoteEventAdapter {
       this.activeHooksCount = 0;
       this.isGenerating = false;
       this.updateStatus();
+
+      // 3. Re-emit initial states for the new session
+      this.emitInitialStates();
     };
     appEvents.on(AppEvent.SessionChanged, this.sessionChangedListener);
   }
@@ -130,6 +124,44 @@ export class RemoteEventAdapter {
         id: this.geminiSessionId,
       } as SessionIdState);
     }
+    // Also emit all current states to the newly connected callback
+    this.emitInitialStates();
+  }
+
+  /**
+   * Zeros out state and fetches current values from config/core.
+   */
+  emitInitialStates(): void {
+    // 1. Model
+    const model = this.config.getModel();
+    if (model) {
+      this.handleState('state:session:model', { model } as ModelState);
+    }
+
+    // 2. RAM Usage
+    this.emitRamUsage();
+
+    // 3. MCP Servers
+    const mcpClientManager = this.config.getMcpClientManager();
+    if (mcpClientManager) {
+      const mcpServers = mcpClientManager.getMcpServers();
+      if (mcpServers) {
+        this.handleState('state:system:mcp:servers', {
+          servers: Object.keys(mcpServers),
+        } as McpServersState);
+      }
+    }
+
+    // 4. Agents
+    const agents = this.config.getAgentRegistry().getAllDefinitions();
+    this.handleState('state:system:agents', {
+      agents: agents.map((a) => ({
+        name: a.name,
+        displayName: a.displayName,
+        description: a.description,
+        kind: a.kind,
+      })),
+    } as AgentsState);
   }
 
   /**
@@ -154,9 +186,10 @@ export class RemoteEventAdapter {
   ): void {
     // @ts-expect-error - EventEmitter generic types are complex to match exactly in a generic method
     this.coreEvents.on(event, handler);
-    // Explicitly casting to the union type which is safe because it's derived from CoreEvents
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-    this.handlers.push({ event, handler } as unknown as AnyEventHandler);
+    this.unsubscribeFunctions.push(() => {
+      // @ts-expect-error - EventEmitter generic types are complex
+      this.coreEvents.off(event, handler);
+    });
   }
 
   /**
@@ -167,8 +200,8 @@ export class RemoteEventAdapter {
 
     this.subscribe(CoreEvent.QuotaChanged, (p: QuotaChangedPayload) => {
       const payload: QuotaState = {
-        remaining: p.remaining,
-        limit: p.limit,
+        remaining: p.remaining ?? 0,
+        limit: p.limit ?? 0,
         resetTime: p.resetTime,
       };
       this.handleState('state:system:quota', payload);
@@ -179,15 +212,18 @@ export class RemoteEventAdapter {
       this.handleState('state:system:memory', payload);
     });
 
-    this.subscribe(
-      CoreEvent.McpClientUpdate,
-      (servers: Map<string, McpClient>) => {
-        const payload: McpServersState = {
-          servers: Array.from(servers.keys()),
-        };
-        this.handleState('state:system:mcp:servers', payload);
-      },
-    );
+    this.subscribe(CoreEvent.McpClientUpdate, (servers: unknown) => {
+      let serverKeys: string[] = [];
+      if (servers instanceof Map) {
+        serverKeys = Array.from(servers.keys()).map((k) => String(k));
+      } else if (this.isObject(servers)) {
+        serverKeys = Object.keys(servers);
+      }
+      const payload: McpServersState = {
+        servers: serverKeys,
+      };
+      this.handleState('state:system:mcp:servers', payload);
+    });
 
     this.subscribe(CoreEvent.AgentsDiscovered, (p: AgentsDiscoveredPayload) => {
       const payload: AgentsState = {
@@ -209,14 +245,6 @@ export class RemoteEventAdapter {
       const payload: ModelState = { model: p.model };
       this.handleState('state:session:model', payload);
     });
-
-    this.subscribe(CoreEvent.SettingsChanged, () =>
-      this.emit('state:session:settings', { changed: true }),
-    );
-
-    this.subscribe(CoreEvent.AdminSettingsChanged, () =>
-      this.emit('state:session:adminSettings', { changed: true }),
-    );
 
     this.subscribe(CoreEvent.EditorSelected, (p: EditorSelectedPayload) => {
       const payload: EditorState = { editor: p.editor };
@@ -295,7 +323,7 @@ export class RemoteEventAdapter {
     this.subscribe(CoreEvent.McpProgress, (p: McpProgressPayload) => {
       const payload: McpProgressEvent = {
         server: p.serverName,
-        message: p.message,
+        message: p.message || '',
         progress: p.progress,
         total: p.total,
       };
@@ -323,7 +351,16 @@ export class RemoteEventAdapter {
     this.subscribe(
       CoreEvent.SlashCommandConflicts,
       (p: SlashCommandConflictsPayload) => {
-        const payload: SlashConflictsEvent = { conflicts: p.conflicts };
+        const payload: SlashConflictsEvent = {
+          conflicts: p.conflicts.map((c: unknown) => {
+            if (typeof c === 'string') return c;
+            if (this.isObject(c)) {
+              const name = c['name'];
+              if (typeof name === 'string') return name;
+            }
+            return String(c);
+          }),
+        };
         this.emit('event:system:slash_conflicts', payload);
       },
     );
@@ -375,14 +412,18 @@ export class RemoteEventAdapter {
     return serialized ? JSON.parse(serialized) : undefined;
   }
 
+  private isObject(val: unknown): val is Record<string, unknown> {
+    return typeof val === 'object' && val !== null;
+  }
+
   /**
    * Clean up listeners.
    */
   dispose(): void {
-    for (const h of this.handlers) {
-      this.coreEvents.off(h.event, h.handler);
+    for (const unsubscribe of this.unsubscribeFunctions) {
+      unsubscribe();
     }
-    this.handlers.length = 0;
+    this.unsubscribeFunctions.length = 0;
     appEvents.off(AppEvent.SessionChanged, this.sessionChangedListener);
   }
 }

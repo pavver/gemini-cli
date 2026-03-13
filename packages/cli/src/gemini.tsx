@@ -758,6 +758,8 @@ export async function main() {
         coreEvents,
         config.getMessageBus(),
         config.getGeminiClient(),
+        config,
+        settings,
         sessionId,
       );
 

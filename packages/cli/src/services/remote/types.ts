@@ -11,55 +11,47 @@
 
 // --- State Payloads ---
 
-export interface QuotaState {
-  remaining?: number;
-  limit?: number;
-  resetTime?: string;
-}
+export type SessionStatus = 'idle' | 'busy' | 'thinking' | 'generating';
 
-export interface MemoryState {
-  fileCount: number;
-}
-
-export interface McpServersState {
-  servers: string[];
-}
-
-export interface AgentInfo {
-  name: string;
-  displayName?: string;
-  description: string;
-  kind: 'local' | 'remote';
-}
-
-export interface AgentsState {
-  agents: AgentInfo[];
+export interface SessionIdState {
+  id: string;
 }
 
 export interface ModelState {
   model: string;
 }
 
-export interface SessionIdState {
-  id: string;
+export interface MemoryState {
+  fileCount: number;
 }
 
-export interface ConsentRequestState {
-  prompt: string;
+export interface QuotaState {
+  remaining: number;
+  limit: number;
+  resetTime?: string;
+}
+
+export interface McpServersState {
+  servers: string[];
+}
+
+export interface AgentsState {
+  agents: Array<{
+    name: string;
+    displayName?: string;
+    description?: string;
+    kind: 'local' | 'remote';
+  }>;
+}
+
+export interface RamUsageState {
+  rss: number;
+  heapTotal: number;
+  heapUsed: number;
 }
 
 export interface EditorState {
   editor?: string;
-}
-
-export type SessionStatus = 'idle' | 'busy' | 'thinking' | 'generating';
-
-export interface SessionStatusState {
-  status: SessionStatus;
-}
-
-export interface LastMessageIdState {
-  id: string;
 }
 
 // --- Event Payloads ---
@@ -99,56 +91,31 @@ export interface HookEndEvent {
 
 export interface McpProgressEvent {
   server: string;
-  progress: number;
+  message: string;
+  progress?: number;
   total?: number;
-  message?: string;
 }
 
 export interface RetryAttemptEvent {
   attempt: number;
   maxAttempts: number;
-  model: string;
+  model?: string;
 }
 
 export interface OauthMessageEvent {
   message: string;
 }
 
-export interface SlashConflict {
-  name: string;
-  renamedTo: string;
-}
-
 export interface SlashConflictsEvent {
-  conflicts: SlashConflict[];
+  conflicts: string[];
 }
 
-import { ToolConfirmationOutcome } from '@google/gemini-cli-core';
-
-export { ToolConfirmationOutcome };
-
-export interface RamUsageState {
-  rss: number;
-  heapTotal: number;
-  heapUsed: number;
-}
-
-// --- Actions (Incoming from Client) ---
-
-export type RemoteAction =
-  | AuthAction
-  | SubscribeAction
-  | UnsubscribeAction
-  | ChatSendAction
-  | ChatStopAction
-  | ChatGetHistoryPageAction
-  | ConfirmReplyAction
-  | AskUserReplyAction;
+// --- Action Payloads (Client -> Server) ---
 
 export interface AuthAction {
   action: 'auth';
+  token: string;
   version: number;
-  token?: string;
 }
 
 export interface SubscribeAction {
@@ -178,85 +145,107 @@ export interface ChatGetHistoryPageAction {
   sort: 'asc' | 'desc';
 }
 
-/**
- * For standard tool confirmations (ToolConfirmationResponse)
- * and UI consent requests (ConsentRequest).
- */
+export interface SettingsGetAction {
+  action: 'settings:get';
+  correlationId: string;
+}
+
+export interface SettingsSetAction {
+  action: 'settings:set';
+  correlationId: string;
+  id: string;
+  value: unknown;
+}
+
 export interface ConfirmReplyAction {
   action: 'confirm:reply';
   correlationId: string;
   confirmed: boolean;
-  outcome?: ToolConfirmationOutcome;
+  outcome?: string;
 }
 
-/**
- * For complex multi-question confirmations (AskUserResponse).
- */
 export interface AskUserReplyAction {
   action: 'confirm:ask_user:reply';
   correlationId: string;
-  answers: { [questionIndex: string]: string };
+  answers: Record<string, string | string[] | boolean>;
   cancelled?: boolean;
 }
 
-// --- Content Types (Decoupled from Google GenAI SDK) ---
+export type RemoteAction =
+  | AuthAction
+  | SubscribeAction
+  | UnsubscribeAction
+  | ChatSendAction
+  | ChatStopAction
+  | ChatGetHistoryPageAction
+  | SettingsGetAction
+  | SettingsSetAction
+  | ConfirmReplyAction
+  | AskUserReplyAction;
 
-export interface RemoteTextPart {
-  text: string;
+// --- Response Payloads (Server -> Client) ---
+
+export interface RemoteSettingDefinition {
+  id: string;
+  label: string;
+  description?: string;
+  type: 'boolean' | 'string' | 'number' | 'enum' | 'array' | 'object';
+  value: unknown;
+  default: unknown;
+  isChanged: boolean;
+  options?: Array<{ label: string; value: unknown }>;
+  requiresRestart: boolean;
+  category: string;
 }
 
-export interface RemoteInlineDataPart {
-  inlineData: {
-    mimeType: string;
-    data: string;
-  };
+export interface SettingsListResponse {
+  type: 'response:settings:list';
+  correlationId: string;
+  settings: RemoteSettingDefinition[];
 }
 
-export interface RemoteFunctionCallPart {
-  functionCall: {
+export interface SettingsSetResponse {
+  type: 'response:settings:set';
+  correlationId: string;
+  success: boolean;
+  error?: string;
+}
+
+// --- History Structures ---
+
+export interface RemotePart {
+  text?: string;
+  functionCall?: {
     name: string;
     args: Record<string, unknown>;
   };
-}
-
-export interface RemoteFunctionResponsePart {
-  functionResponse: {
+  functionResponse?: {
     name: string;
     response: Record<string, unknown>;
   };
-}
-
-export interface RemoteFileDataPart {
-  fileData: {
+  inlineData?: {
+    mimeType: string;
+    data: string;
+  };
+  fileData?: {
     mimeType: string;
     fileUri: string;
   };
-}
-
-export interface RemoteExecutableCodePart {
-  executableCode: {
+  executableCode?: {
     language: string;
     code: string;
   };
-}
-
-export interface RemoteCodeExecutionResultPart {
-  codeExecutionResult: {
+  codeExecutionResult?: {
     outcome: string;
     output: string;
   };
 }
 
-export type RemotePart =
-  | RemoteTextPart
-  | RemoteInlineDataPart
-  | RemoteFunctionCallPart
-  | RemoteFunctionResponsePart
-  | RemoteFileDataPart
-  | RemoteExecutableCodePart
-  | RemoteCodeExecutionResultPart;
-
-// --- Responses (Outgoing, RPC-style) ---
+export interface RemoteThoughtSummary {
+  subject: string;
+  summary: string;
+  timestamp: string;
+}
 
 export interface RemoteTokensSummary {
   input: number;
@@ -265,12 +254,6 @@ export interface RemoteTokensSummary {
   thoughts?: number;
   tool?: number;
   total: number;
-}
-
-export interface RemoteThoughtSummary {
-  subject: string;
-  summary: string;
-  timestamp: string;
 }
 
 export interface RemoteToolCallRecord {
@@ -296,29 +279,35 @@ export interface RemoteMessageRecord {
   model?: string;
 }
 
-export interface HistoryResponse {
-  type: 'response:chat:history';
-  correlationId: string;
-  messages: RemoteMessageRecord[];
-  total: number;
-}
-
-// --- Internal Helper Types ---
-
 /**
- * Event topics used by the Remote API.
- * This list is for documentation and internal reference.
+ * Valid Remote API topics.
  *
- * Bus events (relay from MessageBus):
- * - event:bus:tool-confirmation-request
- * - event:bus:tool-confirmation-response
+ * State Topics (re-emitted on subscription):
+ * - state:system:quota
+ * - state:system:memory
+ * - state:system:mcp:servers
+ * - state:system:agents
+ * - state:system:ramUsage
+ * - state:session:status
+ * - state:session:model
+ * - state:session:id
+ * - state:session:editor
+ * - state:chat:last_message_id
+ * - state:confirm:active:request
+ *
+ * Event Topics (broadcast only):
+ * - event:chat:stream
+ * - event:chat:thought
+ * - event:chat:user_message (for local user messages)
+ * - event:system:console
+ * - event:system:feedback
+ * - event:system:hook:start
+ * - event:system:hook:end
+ * - event:system:mcp:progress
+ * - event:confirm:active:resolved (for ConsentRequests)
+ * - event:bus:tool-calls-update
  * - event:bus:ask-user-request
  * - event:bus:ask-user-response
- * - event:bus:tool-calls-update
- *
- * UI Sync events:
- * - event:confirm:active:resolved (for ConsentRequests)
- * - event:chat:user_message (for terminal user input)
  */
 
 // --- Internal Helper Types ---

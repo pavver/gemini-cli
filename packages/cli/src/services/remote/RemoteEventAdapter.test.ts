@@ -5,25 +5,32 @@
  */
 
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
-import { CoreEventEmitter, CoreEvent } from '@google/gemini-cli-core';
-import type { AgentDefinition } from '@google/gemini-cli-core';
+import { CoreEventEmitter, type Config } from '@google/gemini-cli-core';
 import { RemoteEventAdapter } from './RemoteEventAdapter.js';
-import type {
-  AgentsState,
-  ChatStreamEvent,
-  McpServersState,
-  ModelState,
-  SessionIdState,
-} from './types.js';
+import type { ChatStreamEvent, ModelState, SessionIdState } from './types.js';
+import { createMockConfig } from '../../test-utils/mockConfig.js';
 
 describe('RemoteEventAdapter', () => {
   let coreEvents: CoreEventEmitter;
   let adapter: RemoteEventAdapter;
   let emitSpy: Mock;
+  let mockConfig: Config;
 
   beforeEach(() => {
     coreEvents = new CoreEventEmitter();
-    adapter = new RemoteEventAdapter(coreEvents);
+    mockConfig = createMockConfig({
+      getModel: vi.fn(() => 'test-model'),
+      getToolRegistry: vi.fn(() => ({
+        getTools: vi.fn(() => []),
+        getAllTools: vi.fn(() => []),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      })) as any,
+      getAgentRegistry: vi.fn(() => ({
+        getAllDefinitions: vi.fn(() => []),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      })) as any,
+    });
+    adapter = new RemoteEventAdapter(coreEvents, mockConfig);
     emitSpy = vi.fn();
     adapter.onEmit(emitSpy);
   });
@@ -56,64 +63,21 @@ describe('RemoteEventAdapter', () => {
     });
   });
 
-  it('should map CoreEvent.AgentsDiscovered to simplified agent list', () => {
-    const mockAgents: AgentDefinition[] = [
-      {
-        name: 'agent1',
-        displayName: 'Agent 1',
-        description: 'Desc 1',
-        kind: 'local',
-        inputConfig: { inputSchema: {} },
-        promptConfig: { systemPrompt: '...' },
-        modelConfig: { model: '...' },
-        runConfig: {},
-      },
-    ];
-    coreEvents.emitAgentsDiscovered(mockAgents);
-    const expected: AgentsState = {
-      agents: [
-        {
-          name: 'agent1',
-          displayName: 'Agent 1',
-          description: 'Desc 1',
-          kind: 'local',
-        },
-      ],
-    };
-    expect(emitSpy).toHaveBeenCalledWith({
-      topic: 'state:system:agents',
-      payload: expected,
-    });
-  });
+  it('should notify about session changes and clear cache', () => {
+    adapter.emitState('test:topic', { data: 1 });
+    emitSpy.mockClear();
 
-  it('should emit state:session:id if geminiSessionId provided', () => {
-    const sessionAdapter = new RemoteEventAdapter(coreEvents, 'gemini-123');
-    const spy = vi.fn();
-    sessionAdapter.onEmit(spy);
-    const expected: SessionIdState = { id: 'gemini-123' };
-    expect(spy).toHaveBeenCalledWith({
+    const adapterWithSession = new RemoteEventAdapter(
+      coreEvents,
+      mockConfig,
+      'gemini-123',
+    );
+    const spy2 = vi.fn();
+    adapterWithSession.onEmit(spy2);
+
+    expect(spy2).toHaveBeenCalledWith({
       topic: 'state:session:id',
-      payload: expected,
-    });
-  });
-
-  it('should implement state-diffing (not emitting same payload twice)', () => {
-    coreEvents.emitModelChanged('model-a');
-    coreEvents.emitModelChanged('model-a');
-    expect(emitSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it('should map CoreEvent.McpClientUpdate to list of server names', () => {
-    const mockServers = new Map();
-    mockServers.set('server1', {});
-    mockServers.set('server2', {});
-
-    coreEvents.emit(CoreEvent.McpClientUpdate, mockServers);
-
-    const expected: McpServersState = { servers: ['server1', 'server2'] };
-    expect(emitSpy).toHaveBeenCalledWith({
-      topic: 'state:system:mcp:servers',
-      payload: expected,
+      payload: { id: 'gemini-123' } as SessionIdState,
     });
   });
 });

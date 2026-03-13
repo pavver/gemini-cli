@@ -24,6 +24,8 @@ describe('RemoteApiService - Enhanced Sync (Status, LastMessageID, Cache Clear)'
   let mockCoreEvents: any;
   let mockMessageBus: any;
   let mockChatRecordingService: any;
+  let mockConfig: any;
+  let mockLoadedSettings: any;
 
   beforeEach(() => {
     const coreEmitter = new EventEmitter();
@@ -51,12 +53,30 @@ describe('RemoteApiService - Enhanced Sync (Status, LastMessageID, Cache Clear)'
       getChatRecordingService: vi.fn(() => mockChatRecordingService),
     };
 
+    mockConfig = {
+      getModel: vi.fn(() => 'test-model'),
+      getToolRegistry: vi.fn(() => ({
+        getMcpClients: vi.fn(() => new Map()),
+      })),
+      getAgentRegistry: vi.fn(() => ({
+        getAllDefinitions: vi.fn(() => []),
+      })),
+    };
+
+    mockLoadedSettings = {
+      merged: {},
+      user: { settings: {} },
+      setValue: vi.fn(),
+    };
+
     service = new RemoteApiService(
       PORT,
       TOKEN,
       mockCoreEvents as unknown as CoreEventEmitter,
       mockMessageBus as unknown as MessageBus,
       mockGeminiClient as any,
+      mockConfig,
+      mockLoadedSettings,
       'initial-session',
     );
   });

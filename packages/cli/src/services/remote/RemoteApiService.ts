@@ -19,6 +19,8 @@ import {
   type TokensSummary,
   type ThoughtSummary,
   type GeminiClient,
+  type Config,
+  type ToolConfirmationOutcome,
 } from '@google/gemini-cli-core';
 import {
   type RemoteAction,
@@ -29,14 +31,27 @@ import {
   type ConfirmReplyAction,
   type AskUserReplyAction,
   type ChatGetHistoryPageAction,
+  type SettingsGetAction,
+  type SettingsSetAction,
   type RemoteMessageRecord,
   type RemoteToolCallRecord,
   type RemoteThoughtSummary,
   type RemoteTokensSummary,
   type RemotePart,
+  type RemoteSettingDefinition,
+  type SettingsListResponse,
+  type SettingsSetResponse,
 } from './types.js';
 import { RemoteEventAdapter } from './RemoteEventAdapter.js';
 import { appEvents, AppEvent } from '../../utils/events.js';
+import {
+  getFlattenedSchema,
+  getEffectiveValue,
+  isInSettingsScope,
+  getDefaultValue,
+  parseEditedValue,
+} from '../../utils/settingsUtils.js';
+import { SettingScope, type LoadedSettings } from '../../config/settings.js';
 
 interface RemoteSession {
   id: string;
@@ -68,6 +83,7 @@ export class RemoteApiService {
   private readonly localPromptListener: (text: string) => void;
   private readonly sessionChangedListener: () => void;
   private readonly outputListener: () => void;
+  private ramUpdateTimer: NodeJS.Timeout | undefined;
 
   constructor(
     private readonly port: number,
@@ -75,9 +91,15 @@ export class RemoteApiService {
     private readonly coreEvents: CoreEventEmitter,
     private readonly messageBus: MessageBus,
     private readonly geminiClient: GeminiClient,
+    config: Config,
+    private readonly loadedSettings: LoadedSettings,
     geminiSessionId?: string,
   ) {
-    this.eventAdapter = new RemoteEventAdapter(coreEvents, geminiSessionId);
+    this.eventAdapter = new RemoteEventAdapter(
+      coreEvents,
+      config,
+      geminiSessionId,
+    );
     this.eventAdapter.onEmit((message) => {
       this.broadcastToSubscribers(message.topic, message.payload);
     });
@@ -187,14 +209,14 @@ export class RemoteApiService {
     this.messageBus.subscribe(
       MessageBusType.TOOL_CONFIRMATION_REQUEST,
       (msg: unknown) => {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-        const payload = msg as { correlationId: string; prompt: string };
-        this.enqueueConfirmation({
-          correlationId: payload.correlationId,
-          prompt: payload.prompt,
-          type: 'bus',
-          messageBusType: MessageBusType.TOOL_CONFIRMATION_REQUEST,
-        });
+        if (this.isObject(msg)) {
+          this.enqueueConfirmation({
+            correlationId: String(msg['correlationId'] || ''),
+            prompt: String(msg['prompt'] || ''),
+            type: 'bus',
+            messageBusType: MessageBusType.TOOL_CONFIRMATION_REQUEST,
+          });
+        }
       },
     );
 
@@ -202,9 +224,12 @@ export class RemoteApiService {
     this.messageBus.subscribe(
       MessageBusType.TOOL_CONFIRMATION_RESPONSE,
       (msg: unknown) => {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-        const payload = msg as { correlationId: string; confirmed: boolean };
-        this.resolveConfirmation(payload.correlationId, payload.confirmed);
+        if (this.isObject(msg)) {
+          this.resolveConfirmation(
+            String(msg['correlationId'] || ''),
+            Boolean(msg['confirmed']),
+          );
+        }
       },
     );
 
@@ -236,6 +261,11 @@ export class RemoteApiService {
     this.wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       this.handleConnection(ws, req);
     });
+
+    // Start RAM usage updates
+    this.ramUpdateTimer = setInterval(() => {
+      this.eventAdapter.emitRamUsage();
+    }, 30000);
 
     debugLogger.log(`Remote API server listening on 127.0.0.1:${this.port}`);
   }
@@ -370,6 +400,12 @@ export class RemoteApiService {
       case 'chat:get_history_page':
         this.handleChatGetHistoryPage(session, message);
         break;
+      case 'settings:get':
+        this.handleSettingsGet(session, message);
+        break;
+      case 'settings:set':
+        this.handleSettingsSet(session, message);
+        break;
       case 'confirm:reply':
         this.handleConfirmReply(message);
         break;
@@ -471,6 +507,85 @@ export class RemoteApiService {
     );
   }
 
+  private handleSettingsGet(session: RemoteSession, action: SettingsGetAction) {
+    const schema = getFlattenedSchema();
+    const mergedSettings = this.loadedSettings.merged;
+    const userSettings = this.loadedSettings.user.settings;
+
+    const remoteSettings: RemoteSettingDefinition[] = Object.keys(schema)
+      .filter((key) => schema[key].showInDialog !== false)
+      .map((key) => {
+        const def = schema[key];
+        return {
+          id: key,
+          label: def.label,
+          description: def.description,
+          type: def.type as RemoteSettingDefinition['type'],
+          value: getEffectiveValue(key, mergedSettings),
+          default: getDefaultValue(key),
+          isChanged: isInSettingsScope(key, userSettings),
+          options: def.options
+            ? def.options.map((o) => ({ label: o.label, value: o.value }))
+            : undefined,
+          requiresRestart: def.requiresRestart,
+          category: def.category,
+        };
+      });
+
+    const response: SettingsListResponse = {
+      type: 'response:settings:list',
+      correlationId: action.correlationId,
+      settings: remoteSettings,
+    };
+
+    session.ws.send(JSON.stringify(response));
+  }
+
+  private handleSettingsSet(session: RemoteSession, action: SettingsSetAction) {
+    const schema = getFlattenedSchema();
+    const def = schema[action.id];
+
+    if (!def) {
+      const response: SettingsSetResponse = {
+        type: 'response:settings:set',
+        correlationId: action.correlationId,
+        success: false,
+        error: `Setting ${action.id} not found`,
+      };
+      session.ws.send(JSON.stringify(response));
+      return;
+    }
+
+    try {
+      // We assume User scope for remote changes for now
+      // Value might need parsing if it comes as string from some clients
+      let valueToSet = action.value;
+      if (typeof valueToSet === 'string' && def.type !== 'string') {
+        const parsed = parseEditedValue(def.type, valueToSet);
+        if (parsed !== null) {
+          valueToSet = parsed;
+        }
+      }
+
+      this.loadedSettings.setValue(SettingScope.User, action.id, valueToSet);
+
+      const response: SettingsSetResponse = {
+        type: 'response:settings:set',
+        correlationId: action.correlationId,
+        success: true,
+      };
+      session.ws.send(JSON.stringify(response));
+    } catch (e) {
+      const response: SettingsSetResponse = {
+        type: 'response:settings:set',
+        correlationId: action.correlationId,
+        success: false,
+        error: e instanceof Error ? e.message : String(e),
+      };
+      session.ws.send(JSON.stringify(response));
+    }
+  }
+
   private mapMessage(msg: MessageRecord): RemoteMessageRecord {
     const remoteMsg: RemoteMessageRecord = {
       id: msg.id,
@@ -488,7 +603,9 @@ export class RemoteApiService {
         remoteMsg.toolCalls = msg.toolCalls.map((tc) => this.mapToolCall(tc));
       }
       if (msg.thoughts) {
-        remoteMsg.thoughts = msg.thoughts.map((t) => this.mapThought(t));
+        remoteMsg.thoughts = msg.thoughts.map((t) =>
+          this.mapThought(t as ThoughtSummary & { timestamp: string }),
+        );
       }
       remoteMsg.tokens = this.mapTokens(msg.tokens);
       remoteMsg.model = msg.model;
@@ -610,13 +727,13 @@ export class RemoteApiService {
           typeof value === 'boolean' ||
           value === null
         ) {
-          result[key] = value as unknown;
+          result[key] = value;
         } else if (Array.isArray(value)) {
           const arr: unknown[] = [];
           for (const item of value) {
             arr.push(this.isObject(item) ? this.mapSafeRecord(item) : item);
           }
-          result[key] = arr as unknown;
+          result[key] = arr;
         } else if (this.isObject(value)) {
           result[key] = this.mapSafeRecord(value);
         }
@@ -631,7 +748,7 @@ export class RemoteApiService {
       name: tc.name,
       args: this.mapSafeRecord(tc.args),
       result: tc.result ? this.mapContent(tc.result) : undefined,
-      status: tc.status,
+      status: String(tc.status),
       timestamp: tc.timestamp,
       displayName: tc.displayName,
       description: tc.description,
@@ -676,20 +793,24 @@ export class RemoteApiService {
     if (conf.type === 'consent' && conf.callback) {
       conf.callback(action.confirmed);
     } else if (conf.type === 'bus') {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+      const outcome = action.outcome as ToolConfirmationOutcome | undefined;
       void this.messageBus.publish({
         type: MessageBusType.TOOL_CONFIRMATION_RESPONSE,
         correlationId: action.correlationId,
         confirmed: action.confirmed,
-        outcome: action.outcome,
+        outcome,
       });
     }
   }
 
   private handleAskUserReply(action: AskUserReplyAction) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+    const answers = action.answers as { [key: string]: string };
     void this.messageBus.publish({
       type: MessageBusType.ASK_USER_RESPONSE,
       correlationId: action.correlationId,
-      answers: action.answers,
+      answers,
       cancelled: action.cancelled,
     });
   }
@@ -728,6 +849,9 @@ export class RemoteApiService {
    * Stops the WebSocket server.
    */
   stop(): void {
+    if (this.ramUpdateTimer) {
+      clearInterval(this.ramUpdateTimer);
+    }
     if (this.wss) {
       this.wss.close();
       this.sessions.forEach((s) => s.ws.terminate());
