@@ -170,7 +170,9 @@ export class ChatRecordingService {
         this.cachedLastConvData = null;
         this.cachedConversation = null;
       } else {
-        // Create new session
+        // Create new session - Refresh sessionId from config in case it changed (e.g. /clear)
+        this.sessionId = this.config.getSessionId();
+
         const chatsDir = path.join(
           this.config.storage.getProjectTempDir(),
           'chats',

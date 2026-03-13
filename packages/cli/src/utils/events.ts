@@ -26,6 +26,7 @@ export enum AppEvent {
   RemotePrompt = 'remote-prompt',
   RemoteCancel = 'remote-cancel',
   LocalPrompt = 'local-prompt',
+  SessionChanged = 'session-changed',
 }
 
 export interface AppEvents {
@@ -38,6 +39,7 @@ export interface AppEvents {
   [AppEvent.RemotePrompt]: [string];
   [AppEvent.RemoteCancel]: never[];
   [AppEvent.LocalPrompt]: [string];
+  [AppEvent.SessionChanged]: [string];
 }
 
 export const appEvents = new EventEmitter<AppEvents>();

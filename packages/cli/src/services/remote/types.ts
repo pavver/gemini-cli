@@ -52,11 +52,26 @@ export interface EditorState {
   editor?: string;
 }
 
+export type SessionStatus = 'idle' | 'busy' | 'thinking' | 'generating';
+
+export interface SessionStatusState {
+  status: SessionStatus;
+}
+
+export interface LastMessageIdState {
+  id: string;
+}
+
 // --- Event Payloads ---
 
 export interface ChatStreamEvent {
   chunk: string;
   isStderr: boolean;
+}
+
+export interface ChatThoughtEvent {
+  subject: string;
+  description: string;
 }
 
 export interface ConsoleLogEvent {
@@ -134,7 +149,6 @@ export interface AuthAction {
   action: 'auth';
   version: number;
   token?: string;
-  sessionId?: string;
 }
 
 export interface SubscribeAction {
@@ -310,10 +324,10 @@ export interface HistoryResponse {
 // --- Internal Helper Types ---
 
 export function isRemoteAction(msg: unknown): msg is RemoteAction {
-  return (
-    typeof msg === 'object' &&
-    msg !== null &&
-    'action' in msg &&
-    typeof (msg as Record<string, unknown>).action === 'string'
-  );
+  if (typeof msg !== 'object' || msg === null) {
+    return false;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+  const action = (msg as Record<string, unknown>)['action'];
+  return typeof action === 'string';
 }

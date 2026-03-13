@@ -15,19 +15,20 @@ import {
   type HookStartPayload,
   type HookEndPayload,
   type RetryAttemptPayload,
-  type ConsentRequestPayload,
   type McpProgressPayload,
   type AgentsDiscoveredPayload,
   type SlashCommandConflictsPayload,
   type QuotaChangedPayload,
   type EditorSelectedPayload,
+  type ThoughtPayload,
   type CoreEvents,
   type McpClient,
 } from '@google/gemini-cli-core';
+import { appEvents, AppEvent } from '../../utils/events.js';
 import type {
   AgentsState,
   ChatStreamEvent,
-  ConsentRequestState,
+  ChatThoughtEvent,
   ConsoleLogEvent,
   EditorState,
   FeedbackEvent,
@@ -42,6 +43,7 @@ import type {
   RamUsageState,
   RetryAttemptEvent,
   SessionIdState,
+  SessionStatus,
   SlashConflictsEvent,
 } from './types.js';
 
@@ -72,10 +74,13 @@ export class RemoteEventAdapter {
   private readonly stateCache = new Map<string, string>();
   private onEmitCallback?: (message: RemoteEventMessage) => void;
   private readonly handlers: AnyEventHandler[] = [];
+  private activeHooksCount = 0;
+  private isGenerating = false;
+  private readonly sessionChangedListener: (newId: string) => void;
 
   constructor(
     private readonly coreEvents: CoreEventEmitter,
-    private readonly geminiSessionId?: string,
+    private geminiSessionId?: string,
   ) {
     this.setupSubscriptions();
     if (this.geminiSessionId) {
@@ -83,6 +88,35 @@ export class RemoteEventAdapter {
         id: this.geminiSessionId,
       } as SessionIdState);
     }
+
+    this.updateStatus();
+
+    // Listen to session changes from the UI (e.g., /resume)
+    this.sessionChangedListener = (newId) => {
+      // 1. Clear state cache to prevent leaking state between sessions
+      this.stateCache.clear();
+
+      this.geminiSessionId = newId;
+      this.handleState('state:session:id', {
+        id: newId,
+      } as SessionIdState);
+
+      // 2. Re-emit initial status
+      this.activeHooksCount = 0;
+      this.isGenerating = false;
+      this.updateStatus();
+    };
+    appEvents.on(AppEvent.SessionChanged, this.sessionChangedListener);
+  }
+
+  private updateStatus(): void {
+    let status: SessionStatus = 'idle';
+    if (this.activeHooksCount > 0) {
+      status = 'busy';
+    } else if (this.isGenerating) {
+      status = 'generating';
+    }
+    this.handleState('state:session:status', { status });
   }
 
   /**
@@ -189,14 +223,12 @@ export class RemoteEventAdapter {
       this.handleState('state:session:editor', payload);
     });
 
-    this.subscribe(CoreEvent.ConsentRequest, (p: ConsentRequestPayload) => {
-      const payload: ConsentRequestState = { prompt: p.prompt };
-      this.handleState('state:confirm:active:request', payload);
-    });
-
     // --- 2. EVENT Topics (Transient) ---
 
     this.subscribe(CoreEvent.Output, (p: OutputPayload) => {
+      this.isGenerating = true;
+      this.updateStatus();
+
       const content =
         typeof p.chunk === 'string'
           ? p.chunk
@@ -206,6 +238,19 @@ export class RemoteEventAdapter {
         isStderr: p.isStderr,
       };
       this.emit('event:chat:stream', payload);
+    });
+
+    this.subscribe(CoreEvent.Thought, (p: ThoughtPayload) => {
+      const payload: ChatThoughtEvent = {
+        subject: p.thought.subject,
+        description: p.thought.description,
+      };
+      this.emit('event:chat:thought', payload);
+    });
+
+    this.subscribe(CoreEvent.Finished, () => {
+      this.isGenerating = false;
+      this.updateStatus();
     });
 
     this.subscribe(CoreEvent.ConsoleLog, (p: ConsoleLogPayload) => {
@@ -222,6 +267,10 @@ export class RemoteEventAdapter {
     });
 
     this.subscribe(CoreEvent.HookStart, (p: HookStartPayload) => {
+      this.activeHooksCount++;
+      this.isGenerating = false;
+      this.updateStatus();
+
       const payload: HookStartEvent = {
         hookName: p.hookName,
         eventName: p.eventName,
@@ -232,6 +281,9 @@ export class RemoteEventAdapter {
     });
 
     this.subscribe(CoreEvent.HookEnd, (p: HookEndPayload) => {
+      this.activeHooksCount = Math.max(0, this.activeHooksCount - 1);
+      this.updateStatus();
+
       const payload: HookEndEvent = {
         hookName: p.hookName,
         eventName: p.eventName,
@@ -282,9 +334,22 @@ export class RemoteEventAdapter {
   }
 
   /**
+   * Public interface to emit state changes via this adapter.
+   * Useful for topics managed by other services (like confirmations).
+   */
+  emitState(topic: string, payload: unknown): void {
+    this.handleState(topic, payload);
+  }
+
+  /**
    * Handles stateful topics by comparing with cache.
    */
   private handleState(topic: string, payload: unknown): void {
+    if (payload === null) {
+      this.stateCache.delete(topic);
+      this.emit(topic, null);
+      return;
+    }
     const serialized = JSON.stringify(payload);
     if (this.stateCache.get(topic) === serialized) {
       return;
@@ -318,5 +383,6 @@ export class RemoteEventAdapter {
       this.coreEvents.off(h.event, h.handler);
     }
     this.handlers.length = 0;
+    appEvents.off(AppEvent.SessionChanged, this.sessionChangedListener);
   }
 }

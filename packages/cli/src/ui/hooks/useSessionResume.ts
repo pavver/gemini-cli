@@ -15,6 +15,7 @@ import type { Part } from '@google/genai';
 import type { HistoryItemWithoutId } from '../types.js';
 import type { UseHistoryManagerReturn } from './useHistoryManager.js';
 import { convertSessionToHistoryFormats } from './useSessionBrowser.js';
+import { appEvents, AppEvent } from '../../utils/events.js';
 
 interface UseSessionResumeParams {
   config: Config;
@@ -85,6 +86,12 @@ export function useSessionResume({
 
         // Give the history to the Gemini client.
         await config.getGeminiClient()?.resumeChat(clientHistory, resumedData);
+
+        // Notify Remote API and other listeners that session ID has changed
+        appEvents.emit(
+          AppEvent.SessionChanged,
+          resumedData.conversation.sessionId,
+        );
       } catch (error) {
         coreEvents.emitFeedback(
           'error',

@@ -80,7 +80,8 @@ describe('Core to Remote API Contract Verification', () => {
       name: 'tool',
       args: {},
       result: [],
-      status: 'completed',
+      // @ts-expect-error - testing against enum string values
+      status: 'success',
       timestamp: 'ts',
     };
     expect(dummy.id).toBeDefined();
@@ -98,10 +99,10 @@ describe('Core to Remote API Contract Verification', () => {
      */
     const dummy: Partial<ThoughtSummary> = {
       subject: 'Thinking',
-      summary: 'Doing something',
+      description: 'Doing something',
     };
     expect(dummy.subject).toBeDefined();
-    expect(dummy.summary).toBeDefined();
+    expect(dummy.description).toBeDefined();
   });
 
   it('TokensSummary should have required fields', () => {

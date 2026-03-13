@@ -851,6 +851,10 @@ export const useGeminiStream = (
         // Prevents additional output after a user initiated cancel.
         return '';
       }
+
+      // Broadcast output chunk to Remote API and other subscribers
+      coreEvents.emitOutput(false, eventValue);
+
       let newGeminiMessageBuffer = currentGeminiMessageBuffer + eventValue;
       if (
         pendingHistoryItemRef.current?.type !== 'gemini' &&
@@ -907,6 +911,9 @@ export const useGeminiStream = (
   const handleThoughtEvent = useCallback(
     (eventValue: ThoughtSummary, _userMessageTimestamp: number) => {
       setThought(eventValue);
+
+      // Broadcast thought to Remote API and other subscribers
+      coreEvents.emitThought(eventValue);
 
       if (getInlineThinkingMode(settings) === 'full') {
         addItem({
@@ -1006,6 +1013,9 @@ export const useGeminiStream = (
 
   const handleFinishedEvent = useCallback(
     (event: ServerGeminiFinishedEvent, userMessageTimestamp: number) => {
+      // Notify Remote API that generation is done
+      coreEvents.emitFinished();
+
       const finishReason = event.value.reason;
       if (!finishReason) {
         return;

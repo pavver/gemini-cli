@@ -14,12 +14,20 @@ import type {
   KeychainAvailabilityEvent,
 } from '../telemetry/types.js';
 import { debugLogger } from './debugLogger.js';
+import type { ThoughtSummary } from './thoughtUtils.js';
 
 /**
  * Defines the severity level for user-facing feedback.
  * This maps loosely to UI `MessageType`
  */
 export type FeedbackSeverity = 'info' | 'warning' | 'error';
+
+/**
+ * Payload for the 'thought' event.
+ */
+export interface ThoughtPayload {
+  thought: ThoughtSummary;
+}
 
 /**
  * Payload for the 'user-feedback' event.
@@ -173,6 +181,8 @@ export enum CoreEvent {
   ModelChanged = 'model-changed',
   ConsoleLog = 'console-log',
   Output = 'output',
+  Thought = 'thought',
+  Finished = 'finished',
   MemoryChanged = 'memory-changed',
   ExternalEditorClosed = 'external-editor-closed',
   McpClientUpdate = 'mcp-client-update',
@@ -206,6 +216,8 @@ export interface CoreEvents extends ExtensionEvents {
   [CoreEvent.ModelChanged]: [ModelChangedPayload];
   [CoreEvent.ConsoleLog]: [ConsoleLogPayload];
   [CoreEvent.Output]: [OutputPayload];
+  [CoreEvent.Thought]: [ThoughtPayload];
+  [CoreEvent.Finished]: never[];
   [CoreEvent.MemoryChanged]: [MemoryChangedPayload];
   [CoreEvent.QuotaChanged]: [QuotaChangedPayload];
   [CoreEvent.ExternalEditorClosed]: never[];
@@ -305,6 +317,21 @@ export class CoreEventEmitter extends EventEmitter<CoreEvents> {
   ): void {
     const payload: OutputPayload = { isStderr, chunk, encoding };
     this._emitOrQueue(CoreEvent.Output, payload);
+  }
+
+  /**
+   * Broadcasts model thoughts.
+   */
+  emitThought(thought: ThoughtSummary): void {
+    const payload: ThoughtPayload = { thought };
+    this._emitOrQueue(CoreEvent.Thought, payload);
+  }
+
+  /**
+   * Broadcasts that content generation has finished.
+   */
+  emitFinished(): void {
+    this.emit(CoreEvent.Finished);
   }
 
   /**

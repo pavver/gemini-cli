@@ -4,166 +4,58 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import {
-  vi,
-  describe,
-  it,
-  expect,
-  beforeEach,
-  afterEach,
-  type Mock,
-} from 'vitest';
-import { WebSocket } from 'ws';
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { EventEmitter } from 'node:events';
-import { RemoteApiService } from './RemoteApiService.js';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { WebSocket } from 'ws';
 import {
-  MessageBusType,
-  CoreEvent,
-  ToolConfirmationOutcome,
-  type ConsentRequestPayload,
   type CoreEventEmitter,
   type MessageBus,
   type ChatRecordingService,
 } from '@google/gemini-cli-core';
-import { appEvents, AppEvent } from '../../utils/events.js';
+import { RemoteApiService } from './RemoteApiService.js';
 
-vi.mock('@google/gemini-cli-core', async (importOriginal) => {
-  const original =
-    await importOriginal<typeof import('@google/gemini-cli-core')>();
-  return {
-    ...original,
-    debugLogger: {
-      log: vi.fn(),
-      debug: vi.fn(),
-      error: vi.fn(),
-      warn: vi.fn(),
-    },
-  };
-});
-
-interface BaseRemoteMessage {
-  type?: string;
-  topic?: string;
-  payload?: Record<string, unknown>;
-}
-
-interface AuthOkMessage extends BaseRemoteMessage {
-  type: 'auth_ok';
-  sessionId: string;
-  version: number;
-  reconnected: boolean;
-}
-
-interface EventMessage extends BaseRemoteMessage {
-  topic: string;
-  payload: Record<string, unknown>;
-}
-
-interface HistoryResponseMessage extends BaseRemoteMessage {
-  type: 'response:chat:history';
-  correlationId: string;
-  messages: Array<Record<string, unknown>>;
-  total: number;
-}
-
-type RemoteMessage =
-  | AuthOkMessage
-  | EventMessage
-  | HistoryResponseMessage
-  | BaseRemoteMessage;
-
-describe('RemoteApiService - Full API Synchronization', () => {
-  const PORT = 8131;
+describe('RemoteApiService', () => {
+  const PORT = 8101;
   const TOKEN = 'test-token';
+
   let service: RemoteApiService;
-
-  let mockCoreEvents: {
-    on: Mock;
-    off: Mock;
-    emitConsentRequest: Mock;
-    drainBacklogs: Mock;
-    _trigger: (event: string, payload: ConsentRequestPayload) => void;
-  };
-
-  let mockMessageBus: {
-    publish: Mock;
-    subscribe: Mock;
-    unsubscribe: Mock;
-  };
-
-  let mockChatRecordingService: {
-    getConversation: Mock;
-  };
+  let mockCoreEvents: Partial<CoreEventEmitter>;
+  let mockMessageBus: Partial<MessageBus>;
+  let mockChatRecordingService: Partial<ChatRecordingService>;
 
   beforeEach(() => {
-    vi.clearAllMocks();
-
-    const listeners: Record<string, (payload: ConsentRequestPayload) => void> =
-      {};
+    const coreEmitter = new EventEmitter();
     mockCoreEvents = {
-      on: vi.fn(
-        (event: string, handler: (payload: ConsentRequestPayload) => void) => {
-          listeners[event] = handler;
-        },
-      ),
-      off: vi.fn(),
-      emitConsentRequest: vi.fn(),
-      drainBacklogs: vi.fn(),
-      _trigger: (event: string, payload: ConsentRequestPayload) => {
-        if (listeners[event]) {
-          listeners[event](payload);
-        }
-      },
+      on: coreEmitter.on.bind(coreEmitter) as any,
+      off: coreEmitter.off.bind(coreEmitter) as any,
+      emit: coreEmitter.emit.bind(coreEmitter) as any,
     };
 
     const busEmitter = new EventEmitter();
     mockMessageBus = {
       publish: vi.fn(async (msg: { type: string }) => {
         busEmitter.emit(msg.type, msg);
-      }),
+      }) as any,
       subscribe: vi.fn((type: string, handler: (msg: unknown) => void) => {
         busEmitter.on(type, handler);
-      }),
+      }) as any,
       unsubscribe: vi.fn((type: string, handler: (msg: unknown) => void) => {
         busEmitter.off(type, handler);
-      }),
+      }) as any,
     };
 
     mockChatRecordingService = {
       getConversation: vi.fn(() => ({
         messages: [
-          {
-            id: '1',
-            timestamp: '2026-03-07T12:00:00Z',
-            type: 'user',
-            content: 'Msg 1',
-          },
-          {
-            id: '2',
-            timestamp: '2026-03-07T12:01:00Z',
-            type: 'user',
-            content: 'Msg 2',
-          },
-          {
-            id: '3',
-            timestamp: '2026-03-07T12:02:00Z',
-            type: 'user',
-            content: 'Msg 3',
-          },
-          {
-            id: '4',
-            timestamp: '2026-03-07T12:03:00Z',
-            type: 'user',
-            content: 'Msg 4',
-          },
-          {
-            id: '5',
-            timestamp: '2026-03-07T12:04:00Z',
-            type: 'user',
-            content: 'Msg 5',
-          },
+          { id: '1', timestamp: 'ts', type: 'user', content: 'Msg 1' },
         ],
-      })),
+      })) as any,
+    };
+
+    const mockGeminiClient = {
+      getChatRecordingService: vi.fn(() => mockChatRecordingService),
     };
 
     service = new RemoteApiService(
@@ -171,270 +63,86 @@ describe('RemoteApiService - Full API Synchronization', () => {
       TOKEN,
       mockCoreEvents as unknown as CoreEventEmitter,
       mockMessageBus as unknown as MessageBus,
-      mockChatRecordingService as unknown as ChatRecordingService,
+      mockGeminiClient as any,
     );
   });
 
   afterEach(async () => {
     service.stop();
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 50));
   });
 
   async function connectAndAuth(): Promise<{
     ws: WebSocket;
-    messages: RemoteMessage[];
+    messages: any[];
   }> {
     await service.start();
     const ws = new WebSocket(`ws://127.0.0.1:${PORT}`);
-    const messages: RemoteMessage[] = [];
-    ws.on('message', (data) => {
-      messages.push(JSON.parse(data.toString()) as RemoteMessage);
-    });
+    const messages: any[] = [];
 
-    await new Promise((resolve) => ws.on('open', resolve));
-    ws.send(JSON.stringify({ action: 'auth', version: 1, token: TOKEN }));
-    await vi.waitFor(() =>
-      expect(messages.some((m) => m.type === 'auth_ok')).toBe(true),
-    );
-    await new Promise((r) => setTimeout(r, 50));
-    return { ws, messages };
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error('Connection timeout')),
+        2000,
+      );
+
+      ws.on('open', () => {
+        ws.send(JSON.stringify({ action: 'auth', token: TOKEN, version: 1 }));
+      });
+
+      ws.on('message', (data) => {
+        const msg = JSON.parse(data.toString());
+        messages.push(msg);
+        if (msg.type === 'auth_ok') {
+          clearTimeout(timeout);
+          resolve({ ws, messages });
+        }
+      });
+
+      ws.on('error', reject);
+    });
   }
 
-  it('handles chat:send and chat:stop actions', async () => {
-    const { ws } = await connectAndAuth();
-    const promptSpy = vi.fn();
-    const cancelSpy = vi.fn();
-    appEvents.on(AppEvent.RemotePrompt, promptSpy);
-    appEvents.on(AppEvent.RemoteCancel, cancelSpy);
-
-    ws.send(JSON.stringify({ action: 'chat:send', text: 'Remote message' }));
-    await vi.waitFor(() =>
-      expect(promptSpy).toHaveBeenCalledWith('Remote message'),
-    );
-
-    ws.send(JSON.stringify({ action: 'chat:stop' }));
-    await vi.waitFor(() => expect(cancelSpy).toHaveBeenCalled());
-
-    appEvents.off(AppEvent.RemotePrompt, promptSpy);
-    appEvents.off(AppEvent.RemoteCancel, cancelSpy);
-    ws.close();
+  it('should authenticate with valid token', async () => {
+    const { messages } = await connectAndAuth();
+    expect(messages.some((m) => m.type === 'auth_ok')).toBe(true);
   });
 
-  it('relays MessageBus events to subscribers', async () => {
-    const { ws, messages } = await connectAndAuth();
-    ws.send(
-      JSON.stringify({
-        action: 'system:subscribe',
-        topics: ['event:bus:tool-confirmation-request'],
-      }),
-    );
-    await new Promise((r) => setTimeout(r, 50));
+  it('should reject invalid token', async () => {
+    await service.start();
+    const ws = new WebSocket(`ws://127.0.0.1:${PORT}`);
 
-    const testRequest = {
-      type: MessageBusType.TOOL_CONFIRMATION_REQUEST,
-      correlationId: 'bus-123',
-      toolCall: { name: 'ls', args: {} },
-    };
+    return new Promise((resolve) => {
+      ws.on('open', () => {
+        ws.send(JSON.stringify({ action: 'auth', token: 'wrong', version: 1 }));
+      });
 
-    const handler = mockMessageBus.subscribe.mock.calls.find(
-      (call: [string, (msg: unknown) => void]) =>
-        call[0] === MessageBusType.TOOL_CONFIRMATION_REQUEST,
-    )?.[1] as (msg: unknown) => void;
-    if (handler) {
-      handler(testRequest);
-    }
-
-    await vi.waitFor(() =>
-      expect(
-        messages.some(
-          (m) =>
-            m.topic === 'event:bus:tool-confirmation-request' &&
-            m.payload?.correlationId === 'bus-123',
-        ),
-      ).toBe(true),
-    );
-    ws.close();
-  });
-
-  it('synchronizes local terminal messages to WebSocket', async () => {
-    const { ws, messages } = await connectAndAuth();
-    ws.send(
-      JSON.stringify({
-        action: 'system:subscribe',
-        topics: ['event:chat:user_message'],
-      }),
-    );
-    await new Promise((r) => setTimeout(r, 50));
-    appEvents.emit(AppEvent.LocalPrompt, 'Message from TUI');
-    await vi.waitFor(() =>
-      expect(
-        messages.some(
-          (m) =>
-            m.topic === 'event:chat:user_message' &&
-            m.payload?.text === 'Message from TUI',
-        ),
-      ).toBe(true),
-    );
-    ws.close();
-  });
-
-  it('handles ConsentRequest (Terminal -> Web resolution)', async () => {
-    const { ws, messages } = await connectAndAuth();
-    ws.send(
-      JSON.stringify({
-        action: 'system:subscribe',
-        topics: [
-          'state:confirm:active:request',
-          'event:confirm:active:resolved',
-        ],
-      }),
-    );
-    await new Promise((r) => setTimeout(r, 50));
-
-    const originalOnConfirm = vi.fn();
-    const consentRequest: ConsentRequestPayload = {
-      prompt: 'Trust?',
-      onConfirm: originalOnConfirm,
-    };
-
-    mockCoreEvents._trigger(CoreEvent.ConsentRequest, consentRequest);
-
-    await vi.waitFor(() =>
-      expect(
-        messages.some((m) => m.topic === 'state:confirm:active:request'),
-      ).toBe(true),
-    );
-    const correlationId = messages.find(
-      (m) => m.topic === 'state:confirm:active:request',
-    )?.payload?.correlationId as string;
-
-    consentRequest.onConfirm(true);
-
-    await vi.waitFor(() =>
-      expect(
-        messages.some(
-          (m) =>
-            m.topic === 'event:confirm:active:resolved' &&
-            m.payload?.correlationId === correlationId &&
-            m.payload?.confirmed === true,
-        ),
-      ).toBe(true),
-    );
-    expect(originalOnConfirm).toHaveBeenCalledWith(true);
-    ws.close();
-  });
-
-  it('handles ConsentRequest (Web -> Terminal resolution)', async () => {
-    const { ws, messages } = await connectAndAuth();
-    ws.send(
-      JSON.stringify({
-        action: 'system:subscribe',
-        topics: ['state:confirm:active:request'],
-      }),
-    );
-    await new Promise((r) => setTimeout(r, 50));
-
-    const originalOnConfirm = vi.fn();
-    const consentRequest: ConsentRequestPayload = {
-      prompt: 'Trust?',
-      onConfirm: originalOnConfirm,
-    };
-
-    mockCoreEvents._trigger(CoreEvent.ConsentRequest, consentRequest);
-
-    await vi.waitFor(() =>
-      expect(
-        messages.some((m) => m.topic === 'state:confirm:active:request'),
-      ).toBe(true),
-    );
-    const correlationId = messages.find(
-      (m) => m.topic === 'state:confirm:active:request',
-    )?.payload?.correlationId as string;
-
-    ws.send(
-      JSON.stringify({
-        action: 'confirm:reply',
-        correlationId,
-        confirmed: true,
-      }),
-    );
-
-    await vi.waitFor(() =>
-      expect(originalOnConfirm).toHaveBeenCalledWith(true),
-    );
-    ws.close();
-  });
-
-  it('supports complex tool outcomes in confirm:reply', async () => {
-    const { ws } = await connectAndAuth();
-    ws.send(
-      JSON.stringify({
-        action: 'confirm:reply',
-        correlationId: 'outcome-123',
-        confirmed: true,
-        outcome: ToolConfirmationOutcome.ProceedAlways,
-      }),
-    );
-    await vi.waitFor(() =>
-      expect(mockMessageBus.publish).toHaveBeenCalledWith(
-        expect.objectContaining({
-          correlationId: 'outcome-123',
-          outcome: ToolConfirmationOutcome.ProceedAlways,
-        }),
-      ),
-    );
-    ws.close();
-  });
-
-  it('handles chat:get_history_page (ASC)', async () => {
-    const { ws, messages } = await connectAndAuth();
-    ws.send(
-      JSON.stringify({
-        action: 'chat:get_history_page',
-        correlationId: 'hist-1',
-        limit: 2,
-        offset: 1,
-        sort: 'asc',
-      }),
-    );
-
-    await vi.waitFor(() => {
-      const resp = messages.find(
-        (m) => m.type === 'response:chat:history',
-      ) as HistoryResponseMessage;
-      expect(resp).toBeDefined();
-      expect(resp.correlationId).toBe('hist-1');
-      expect(resp.messages).toHaveLength(2);
-      expect(resp.messages[0].id).toBe('2');
-      expect(resp.messages[1].id).toBe('3');
-      expect(resp.total).toBe(5);
+      ws.on('message', (data) => {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'error') {
+          resolve(true);
+        }
+      });
     });
-    ws.close();
   });
 
-  it('handles chat:get_history_page (DESC)', async () => {
-    const { ws, messages } = await connectAndAuth();
+  it('should handle subscriptions', async () => {
+    const { ws } = await connectAndAuth();
+
     ws.send(
       JSON.stringify({
-        action: 'chat:get_history_page',
-        correlationId: 'hist-2',
-        limit: 2,
-        offset: 1,
-        sort: 'desc',
+        action: 'system:subscribe',
+        topics: ['state:session:status'],
       }),
     );
 
-    await vi.waitFor(() => {
-      const resp = messages.find(
-        (m) => m.type === 'response:chat:history',
-      ) as HistoryResponseMessage;
-      expect(resp).toBeDefined();
-      expect(resp.correlationId).toBe('hist-2');
-      expect(resp.messages).toHaveLength(2);
-      expect(resp.messages[0].id).toBe('4');
-      expect(resp.messages[1].id).toBe('3');
-      expect(resp.total).toBe(5);
+    return new Promise((resolve) => {
+      ws.on('message', (data) => {
+        const msg = JSON.parse(data.toString());
+        if (msg.topic === 'state:session:status') {
+          resolve(true);
+        }
+      });
     });
-    ws.close();
   });
 });

@@ -14,11 +14,11 @@ import {
   MessageBusType,
   CoreEvent,
   type ConsentRequestPayload,
-  type ChatRecordingService,
   type MessageRecord,
   type ToolCallRecord,
   type TokensSummary,
   type ThoughtSummary,
+  type GeminiClient,
 } from '@google/gemini-cli-core';
 import {
   type RemoteAction,
@@ -46,6 +46,14 @@ interface RemoteSession {
   subscriptions: Set<string>;
 }
 
+interface PendingConfirmation {
+  correlationId: string;
+  prompt: string;
+  callback?: (confirmed: boolean) => void;
+  type: 'consent' | 'bus';
+  messageBusType?: MessageBusType;
+}
+
 /**
  * RemoteApiService provides a WebSocket interface for remote interaction with Gemini CLI.
  */
@@ -54,18 +62,19 @@ export class RemoteApiService {
   private readonly sessions = new Map<string, RemoteSession>();
   private readonly lockedIps = new Set<string>();
   private readonly eventAdapter: RemoteEventAdapter;
-  private readonly consentCallbacks = new Map<
-    string,
-    (confirmed: boolean) => void
-  >();
+  private readonly pendingConfirmations: PendingConfirmation[] = [];
+  private readonly messageBusCache = new Map<string, unknown>();
   private readonly consentListener: (p: ConsentRequestPayload) => void;
+  private readonly localPromptListener: (text: string) => void;
+  private readonly sessionChangedListener: () => void;
+  private readonly outputListener: () => void;
 
   constructor(
     private readonly port: number,
     private readonly remoteToken: string | undefined,
     private readonly coreEvents: CoreEventEmitter,
     private readonly messageBus: MessageBus,
-    private readonly chatRecordingService: ChatRecordingService,
+    private readonly geminiClient: GeminiClient,
     geminiSessionId?: string,
   ) {
     this.eventAdapter = new RemoteEventAdapter(coreEvents, geminiSessionId);
@@ -81,43 +90,135 @@ export class RemoteApiService {
       const correlationId = randomUUID();
       const originalOnConfirm = p.onConfirm;
 
-      // Wrap the callback to notify WebSocket clients when it's resolved (e.g., via TUI)
-      p.onConfirm = (confirmed: boolean) => {
-        this.consentCallbacks.delete(correlationId);
-        this.broadcastToSubscribers('event:confirm:active:resolved', {
-          correlationId,
-          confirmed,
-        });
+      const wrappedOnConfirm = (confirmed: boolean) => {
+        this.resolveConfirmation(correlationId, confirmed);
         originalOnConfirm(confirmed);
       };
 
-      this.consentCallbacks.set(correlationId, p.onConfirm);
-      this.broadcastToSubscribers('state:confirm:active:request', {
-        prompt: p.prompt,
+      this.enqueueConfirmation({
         correlationId,
+        prompt: p.prompt,
+        callback: wrappedOnConfirm,
+        type: 'consent',
       });
     };
     this.coreEvents.on(CoreEvent.ConsentRequest, this.consentListener);
 
     // 3. Synchronize Local User Messages (Terminal -> WebSocket)
-    appEvents.on(AppEvent.LocalPrompt, (text) => {
+    this.localPromptListener = (text: string) => {
       this.broadcastToSubscribers('event:chat:user_message', { text });
+      this.updateLastMessageId();
+    };
+    appEvents.on(AppEvent.LocalPrompt, this.localPromptListener);
+
+    // 4. Handle session changes
+    this.sessionChangedListener = () => {
+      this.messageBusCache.clear();
+      this.pendingConfirmations.length = 0;
+      this.updateLastMessageId();
+    };
+    appEvents.on(AppEvent.SessionChanged, this.sessionChangedListener);
+
+    // 5. Update last message ID on output
+    this.outputListener = () => {
+      this.updateLastMessageId();
+    };
+    this.coreEvents.on(CoreEvent.Output, this.outputListener);
+
+    // Initial state update
+    this.updateLastMessageId();
+  }
+
+  private updateLastMessageId(): void {
+    const recordingService = this.geminiClient.getChatRecordingService();
+    if (!recordingService) {
+      return;
+    }
+    const conversation = recordingService.getConversation();
+    if (conversation && conversation.messages.length > 0) {
+      const lastId = conversation.messages[conversation.messages.length - 1].id;
+      this.eventAdapter.emitState('state:chat:last_message_id', { id: lastId });
+    } else {
+      this.eventAdapter.emitState('state:chat:last_message_id', null);
+    }
+  }
+
+  private enqueueConfirmation(conf: PendingConfirmation): void {
+    this.pendingConfirmations.push(conf);
+    if (this.pendingConfirmations.length === 1) {
+      this.broadcastActiveConfirmation();
+    }
+  }
+
+  private resolveConfirmation(correlationId: string, confirmed: boolean): void {
+    const index = this.pendingConfirmations.findIndex(
+      (c) => c.correlationId === correlationId,
+    );
+    if (index === -1) return;
+
+    const isCurrent = index === 0;
+    this.pendingConfirmations.splice(index, 1);
+
+    this.broadcastToSubscribers('event:confirm:active:resolved', {
+      correlationId,
+      confirmed,
     });
+
+    if (isCurrent) {
+      this.broadcastActiveConfirmation();
+    }
+  }
+
+  private broadcastActiveConfirmation(): void {
+    const current = this.pendingConfirmations[0];
+    if (current) {
+      this.eventAdapter.emitState('state:confirm:active:request', {
+        prompt: current.prompt,
+        correlationId: current.correlationId,
+      });
+    } else {
+      // Clear the active request state if no more pending
+      this.eventAdapter.emitState('state:confirm:active:request', null);
+    }
   }
 
   private relayMessageBus(): void {
-    const typesToRelay = [
+    // Tool confirmation requests need to be queued
+    this.messageBus.subscribe(
       MessageBusType.TOOL_CONFIRMATION_REQUEST,
+      (msg: unknown) => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+        const payload = msg as { correlationId: string; prompt: string };
+        this.enqueueConfirmation({
+          correlationId: payload.correlationId,
+          prompt: payload.prompt,
+          type: 'bus',
+          messageBusType: MessageBusType.TOOL_CONFIRMATION_REQUEST,
+        });
+      },
+    );
+
+    // Responses (even local ones) should resolve the queue
+    this.messageBus.subscribe(
       MessageBusType.TOOL_CONFIRMATION_RESPONSE,
+      (msg: unknown) => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+        const payload = msg as { correlationId: string; confirmed: boolean };
+        this.resolveConfirmation(payload.correlationId, payload.confirmed);
+      },
+    );
+
+    // Other MessageBus events can be relayed directly and cached if needed
+    const otherTypes = [
       MessageBusType.ASK_USER_REQUEST,
       MessageBusType.ASK_USER_RESPONSE,
       MessageBusType.TOOL_CALLS_UPDATE,
     ];
 
-    typesToRelay.forEach((type) => {
-      this.messageBus.subscribe(type, (msg) => {
-        // Map MessageBus types to Remote API event topics
+    otherTypes.forEach((type) => {
+      this.messageBus.subscribe(type, (msg: unknown) => {
         const topic = `event:bus:${type}`;
+        this.messageBusCache.set(topic, msg);
         this.broadcastToSubscribers(topic, msg);
       });
     });
@@ -191,8 +292,9 @@ export class RemoteApiService {
 
     ws.on('close', () => {
       if (session) {
+        this.sessions.delete(session.id);
         debugLogger.log(
-          `Client session ${session.id} closed connection from ${ip}`,
+          `Client session ${session.id} closed and removed from ${ip}`,
         );
       }
     });
@@ -222,31 +324,15 @@ export class RemoteApiService {
     // Token is valid - process session
     clearTimeout(authTimeout);
 
-    let sessionId = message.sessionId;
-    let isReconnection = false;
-    let session: RemoteSession;
-
-    if (sessionId && this.sessions.has(sessionId)) {
-      // Reconnect to existing session
-      session = this.sessions.get(sessionId)!;
-      // Terminate old socket if it's still open
-      if (session.ws !== ws) {
-        session.ws.terminate();
-        session.ws = ws;
-      }
-      isReconnection = true;
-    } else {
-      // Create new session
-      sessionId = sessionId || randomUUID();
-      session = {
-        id: sessionId,
-        ws,
-        ip,
-        authenticated: true,
-        subscriptions: new Set<string>(),
-      };
-      this.sessions.set(sessionId, session);
-    }
+    const sessionId = randomUUID();
+    const session: RemoteSession = {
+      id: sessionId,
+      ws,
+      ip,
+      authenticated: true,
+      subscriptions: new Set<string>(),
+    };
+    this.sessions.set(sessionId, session);
 
     // Immediate response on success
     ws.send(
@@ -254,12 +340,11 @@ export class RemoteApiService {
         type: 'auth_ok',
         sessionId,
         version: 1,
-        reconnected: isReconnection,
       }),
     );
 
     debugLogger.log(
-      `Client from ${ip} authenticated. Session: ${sessionId} (${isReconnection ? 'reconnected' : 'new'})`,
+      `Client from ${ip} authenticated. New session created: ${sessionId}`,
     );
 
     return session;
@@ -301,10 +386,15 @@ export class RemoteApiService {
 
   private handleSubscribe(session: RemoteSession, action: SubscribeAction) {
     action.topics.forEach((topic) => session.subscriptions.add(topic));
-    // Immediately send current state for newly subscribed state topics
+    // Immediately send current state for newly subscribed state topics or cached bus topics
     action.topics.forEach((topic) => {
       if (topic.startsWith('state:')) {
         const cached = this.eventAdapter.getState(topic);
+        if (cached) {
+          session.ws.send(JSON.stringify({ topic, payload: cached }));
+        }
+      } else if (topic.startsWith('event:bus:')) {
+        const cached = this.messageBusCache.get(topic);
         if (cached) {
           session.ws.send(JSON.stringify({ topic, payload: cached }));
         }
@@ -318,6 +408,7 @@ export class RemoteApiService {
 
   private handleChatSend(action: ChatSendAction) {
     appEvents.emit(AppEvent.RemotePrompt, action.text);
+    this.updateLastMessageId();
   }
 
   private handleChatStop() {
@@ -328,7 +419,19 @@ export class RemoteApiService {
     session: RemoteSession,
     action: ChatGetHistoryPageAction,
   ) {
-    const conversation = this.chatRecordingService.getConversation();
+    const recordingService = this.geminiClient.getChatRecordingService();
+    if (!recordingService) {
+      session.ws.send(
+        JSON.stringify({
+          type: 'response:chat:history',
+          correlationId: action.correlationId,
+          messages: [],
+          total: 0,
+        }),
+      );
+      return;
+    }
+    const conversation = recordingService.getConversation();
     if (!conversation) {
       session.ws.send(
         JSON.stringify({
@@ -418,66 +521,77 @@ export class RemoteApiService {
     }
 
     if (this.isObject(part)) {
-      if (typeof part['text'] === 'string') {
-        return { text: part['text'] };
+      const text = part['text'];
+      if (typeof text === 'string') {
+        return { text };
       }
 
-      if (this.isObject(part['functionCall'])) {
-        const fc = part['functionCall'];
+      const fc = part['functionCall'];
+      if (this.isObject(fc)) {
+        const name = fc['name'];
         return {
           functionCall: {
-            name: typeof fc['name'] === 'string' ? fc['name'] : '',
+            name: typeof name === 'string' ? name : '',
             args: this.mapSafeRecord(fc['args']),
           },
         };
       }
 
-      if (this.isObject(part['functionResponse'])) {
-        const fr = part['functionResponse'];
+      const fr = part['functionResponse'];
+      if (this.isObject(fr)) {
+        const name = fr['name'];
         return {
           functionResponse: {
-            name: typeof fr['name'] === 'string' ? fr['name'] : '',
+            name: typeof name === 'string' ? name : '',
             response: this.mapSafeRecord(fr['response']),
           },
         };
       }
 
-      if (this.isObject(part['inlineData'])) {
-        const id = part['inlineData'];
+      const id = part['inlineData'];
+      if (this.isObject(id)) {
+        const mimeType = id['mimeType'];
+        const data = id['data'];
         return {
           inlineData: {
-            mimeType: typeof id['mimeType'] === 'string' ? id['mimeType'] : '',
-            data: typeof id['data'] === 'string' ? id['data'] : '',
+            mimeType: typeof mimeType === 'string' ? mimeType : '',
+            data: typeof data === 'string' ? data : '',
           },
         };
       }
 
-      if (this.isObject(part['fileData'])) {
-        const fd = part['fileData'];
+      const fd = part['fileData'];
+      if (this.isObject(fd)) {
+        const mimeType = fd['mimeType'];
+        const fileUri = fd['fileUri'];
         return {
           fileData: {
-            mimeType: typeof fd['mimeType'] === 'string' ? fd['mimeType'] : '',
-            fileUri: typeof fd['fileUri'] === 'string' ? fd['fileUri'] : '',
+            mimeType: typeof mimeType === 'string' ? mimeType : '',
+            fileUri: typeof fileUri === 'string' ? fileUri : '',
           },
         };
       }
 
-      if (this.isObject(part['executableCode'])) {
-        const ec = part['executableCode'];
+      const ec = part['executableCode'];
+      if (this.isObject(ec)) {
+        const language = ec['language'];
+        const code = ec['code'];
         return {
           executableCode: {
-            language: typeof ec['language'] === 'string' ? ec['language'] : '',
-            code: typeof ec['code'] === 'string' ? ec['code'] : '',
+            language: typeof language === 'string' ? language : '',
+            code: typeof code === 'string' ? code : '',
           },
         };
       }
 
-      if (this.isObject(part['codeExecutionResult'])) {
-        const cer = part['codeExecutionResult'];
+      const cer = part['codeExecutionResult'];
+      if (this.isObject(cer)) {
+        const outcome = cer['outcome'];
+        const output = cer['output'];
         return {
           codeExecutionResult: {
-            outcome: typeof cer['outcome'] === 'string' ? cer['outcome'] : '',
-            output: typeof cer['output'] === 'string' ? cer['output'] : '',
+            outcome: typeof outcome === 'string' ? outcome : '',
+            output: typeof output === 'string' ? output : '',
           },
         };
       }
@@ -529,8 +643,7 @@ export class RemoteApiService {
   ): RemoteThoughtSummary {
     return {
       subject: t.subject,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-      summary: t.summary,
+      summary: t.description,
       timestamp: t.timestamp,
     };
   }
@@ -553,21 +666,23 @@ export class RemoteApiService {
   }
 
   private handleConfirmReply(action: ConfirmReplyAction) {
-    // Check if it's a ConsentRequest callback
-    const consentCallback = this.consentCallbacks.get(action.correlationId);
-    if (consentCallback) {
-      consentCallback(action.confirmed);
-      this.consentCallbacks.delete(action.correlationId);
-      return;
-    }
+    const index = this.pendingConfirmations.findIndex(
+      (c) => c.correlationId === action.correlationId,
+    );
+    if (index === -1) return;
 
-    // Otherwise, it's a ToolConfirmation through MessageBus
-    void this.messageBus.publish({
-      type: MessageBusType.TOOL_CONFIRMATION_RESPONSE,
-      correlationId: action.correlationId,
-      confirmed: action.confirmed,
-      outcome: action.outcome,
-    });
+    const conf = this.pendingConfirmations[index];
+
+    if (conf.type === 'consent' && conf.callback) {
+      conf.callback(action.confirmed);
+    } else if (conf.type === 'bus') {
+      void this.messageBus.publish({
+        type: MessageBusType.TOOL_CONFIRMATION_RESPONSE,
+        correlationId: action.correlationId,
+        confirmed: action.confirmed,
+        outcome: action.outcome,
+      });
+    }
   }
 
   private handleAskUserReply(action: AskUserReplyAction) {
@@ -619,10 +734,14 @@ export class RemoteApiService {
       this.sessions.clear();
       this.lockedIps.clear();
       this.eventAdapter.dispose();
-      this.consentCallbacks.clear();
+      this.pendingConfirmations.length = 0;
+
+      // Cleanup listeners
       this.coreEvents.off(CoreEvent.ConsentRequest, this.consentListener);
-      // We don't have an easy way to unsubscribe from appEvents without storing each callback,
-      // but for Remote API lifecycle it's usually once per app run.
+      this.coreEvents.off(CoreEvent.Output, this.outputListener);
+      appEvents.off(AppEvent.LocalPrompt, this.localPromptListener);
+      appEvents.off(AppEvent.SessionChanged, this.sessionChangedListener);
+
       debugLogger.log('Remote API server stopped');
     }
   }

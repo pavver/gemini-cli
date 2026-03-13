@@ -36,9 +36,9 @@ import {
 import type { ValidationRequiredError } from '../utils/googleQuotaErrors.js';
 import { getErrorMessage, isAbortError } from '../utils/errors.js';
 import { tokenLimit } from './tokenLimits.js';
-import type {
+import {
   ChatRecordingService,
-  ResumedSessionData,
+  type ResumedSessionData,
 } from '../services/chatRecordingService.js';
 import type { ContentGenerator } from './contentGenerator.js';
 import { LoopDetectionService } from '../services/loopDetectionService.js';
@@ -94,6 +94,7 @@ export class GeminiClient {
   private readonly loopDetector: LoopDetectionService;
   private readonly compressionService: ChatCompressionService;
   private readonly toolOutputMaskingService: ToolOutputMaskingService;
+  private readonly chatRecordingService: ChatRecordingService;
   private lastPromptId: string;
   private currentSequenceModel: string | null = null;
   private lastSentIdeContext: IdeContext | undefined;
@@ -109,6 +110,7 @@ export class GeminiClient {
     this.loopDetector = new LoopDetectionService(config);
     this.compressionService = new ChatCompressionService();
     this.toolOutputMaskingService = new ToolOutputMaskingService();
+    this.chatRecordingService = new ChatRecordingService(config);
     this.lastPromptId = this.config.getSessionId();
 
     coreEvents.on(CoreEvent.ModelChanged, this.handleModelChanged);
@@ -304,8 +306,8 @@ export class GeminiClient {
     this.updateTelemetryTokenCount();
   }
 
-  getChatRecordingService(): ChatRecordingService | undefined {
-    return this.chat?.getChatRecordingService();
+  getChatRecordingService(): ChatRecordingService {
+    return this.chatRecordingService;
   }
 
   getLoopDetectionService(): LoopDetectionService {
@@ -367,6 +369,8 @@ export class GeminiClient {
             toolRegistry.getFunctionDeclarations(modelId);
           return [{ functionDeclarations: toolDeclarations }];
         },
+        'main',
+        this.chatRecordingService,
       );
     } catch (error) {
       await reportError(
