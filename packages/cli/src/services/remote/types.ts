@@ -54,6 +54,10 @@ export interface EditorState {
   editor?: string;
 }
 
+export interface SettingsHashState {
+  hash: string;
+}
+
 // --- Event Payloads ---
 
 export interface ChatStreamEvent {
@@ -155,6 +159,7 @@ export interface SettingsSetAction {
   correlationId: string;
   id: string;
   value: unknown;
+  settingsHash?: string;
 }
 
 export interface ConfirmReplyAction {
@@ -208,6 +213,7 @@ export interface SettingsSetResponse {
   type: 'response:settings:set';
   correlationId: string;
   success: boolean;
+  settingsHash?: string;
   error?: string;
 }
 

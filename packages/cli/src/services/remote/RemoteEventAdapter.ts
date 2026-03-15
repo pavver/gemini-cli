@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { randomUUID } from 'node:crypto';
 import {
   type CoreEventEmitter,
   CoreEvent,
@@ -44,6 +45,7 @@ import type {
   RetryAttemptEvent,
   SessionIdState,
   SessionStatus,
+  SettingsHashState,
   SlashConflictsEvent,
 } from './types.js';
 
@@ -67,6 +69,7 @@ export class RemoteEventAdapter {
   private activeHooksCount = 0;
   private isGenerating = false;
   private readonly sessionChangedListener: (newId: string) => void;
+  private agentsInitTimer?: NodeJS.Timeout;
 
   constructor(
     private readonly coreEvents: CoreEventEmitter,
@@ -129,6 +132,18 @@ export class RemoteEventAdapter {
   }
 
   /**
+   * Explicitly emits the current settings hash.
+   * If a hash is provided (e.g., from a client's set action), it is used.
+   * Otherwise, a new unique hash is generated.
+   */
+  emitSettingsHash(hash?: string): void {
+    const nextHash = hash || randomUUID();
+    this.handleState('state:session:settings:hash', {
+      hash: nextHash,
+    } as SettingsHashState);
+  }
+
+  /**
    * Zeros out state and fetches current values from config/core.
    */
   emitInitialStates(): void {
@@ -140,6 +155,9 @@ export class RemoteEventAdapter {
 
     // 2. RAM Usage
     this.emitRamUsage();
+
+    // 2.5. Settings Hash
+    this.emitSettingsHash();
 
     // 3. MCP Servers
     const mcpClientManager = this.config.getMcpClientManager();
@@ -153,19 +171,36 @@ export class RemoteEventAdapter {
     }
 
     // 4. Agents
-    const agents = this.config.getAgentRegistry().getAllDefinitions();
-    this.handleState('state:system:agents', {
-      agents: agents.map((a) => ({
-        name: a.name,
-        displayName: a.displayName,
-        description: a.description,
-        kind: a.kind,
-      })),
-    } as AgentsState);
+    this.tryEmitAgents();
+  }
+  /**
+   * Tries to emit agents. If registry is not ready, starts a timer to retry.
+   */
+  private tryEmitAgents(): void {
+    const agentRegistry = this.config.getAgentRegistry();
+    if (agentRegistry) {
+      const agents = agentRegistry.getAllDefinitions();
+      this.handleState('state:system:agents', {
+        agents: agents.map((a) => ({
+          name: a.name,
+          displayName: a.displayName,
+          description: a.description,
+          kind: a.kind,
+        })),
+      } as AgentsState);
+
+      if (this.agentsInitTimer) {
+        clearInterval(this.agentsInitTimer);
+        this.agentsInitTimer = undefined;
+      }
+    } else if (!this.agentsInitTimer) {
+      this.agentsInitTimer = setInterval(() => this.tryEmitAgents(), 1000);
+    }
   }
 
   /**
-   * Explicitly emits current RAM usage.
+ * Explicitly emits current RAM usage.
+...
    */
   emitRamUsage(): void {
     const usage = process.memoryUsage();
@@ -238,12 +273,16 @@ export class RemoteEventAdapter {
     });
 
     this.subscribe(CoreEvent.AgentsRefreshed, () =>
-      this.emit('state:system:agents:refresh', {}),
+      this.emit('event:system:agents:refresh', {}),
     );
 
     this.subscribe(CoreEvent.ModelChanged, (p: ModelChangedPayload) => {
       const payload: ModelState = { model: p.model };
       this.handleState('state:session:model', payload);
+    });
+
+    this.subscribe(CoreEvent.SettingsChanged, () => {
+      this.emitSettingsHash();
     });
 
     this.subscribe(CoreEvent.EditorSelected, (p: EditorSelectedPayload) => {
@@ -420,6 +459,10 @@ export class RemoteEventAdapter {
    * Clean up listeners.
    */
   dispose(): void {
+    if (this.agentsInitTimer) {
+      clearInterval(this.agentsInitTimer);
+      this.agentsInitTimer = undefined;
+    }
     for (const unsubscribe of this.unsubscribeFunctions) {
       unsubscribe();
     }

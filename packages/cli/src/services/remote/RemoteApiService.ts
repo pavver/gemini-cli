@@ -569,10 +569,17 @@ export class RemoteApiService {
 
       this.loadedSettings.setValue(SettingScope.User, action.id, valueToSet);
 
+      // If client provided a hash, make sure we use it so they can recognize their change.
+      // emitSettingsHash will update the 'state:session:settings:hash' topic for everyone.
+      if (action.settingsHash) {
+        this.eventAdapter.emitSettingsHash(action.settingsHash);
+      }
+
       const response: SettingsSetResponse = {
         type: 'response:settings:set',
         correlationId: action.correlationId,
         success: true,
+        settingsHash: action.settingsHash,
       };
       session.ws.send(JSON.stringify(response));
     } catch (e) {
@@ -580,6 +587,7 @@ export class RemoteApiService {
         type: 'response:settings:set',
         correlationId: action.correlationId,
         success: false,
+        settingsHash: action.settingsHash,
         error: e instanceof Error ? e.message : String(e),
       };
       session.ws.send(JSON.stringify(response));
