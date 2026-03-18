@@ -8,7 +8,6 @@ import { randomUUID } from 'node:crypto';
 import {
   type CoreEventEmitter,
   CoreEvent,
-  coreEvents as globalCoreEvents,
   debugLogger,
   type UserFeedbackPayload,
   type ModelChangedPayload,
@@ -263,14 +262,10 @@ export class RemoteEventAdapter {
 
     // @ts-expect-error - EventEmitter generic types are complex to match exactly in a generic method
     this.coreEvents.on(event, wrappedHandler);
-    // @ts-expect-error - Listen to global instance as well to ensure synchronization
-    globalCoreEvents.on(event, wrappedHandler);
 
     this.unsubscribeFunctions.push(() => {
       // @ts-expect-error - EventEmitter generic types are complex
       this.coreEvents.off(event, wrappedHandler);
-      // @ts-expect-error - EventEmitter generic types are complex
-      globalCoreEvents.off(event, wrappedHandler);
     });
   }
 
