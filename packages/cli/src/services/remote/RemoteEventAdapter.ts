@@ -8,6 +8,8 @@ import { randomUUID } from 'node:crypto';
 import {
   type CoreEventEmitter,
   CoreEvent,
+  coreEvents as globalCoreEvents,
+  debugLogger,
   type UserFeedbackPayload,
   type ModelChangedPayload,
   type ConsoleLogPayload,
@@ -39,6 +41,7 @@ import type {
   McpServersState,
   MemoryState,
   ModelState,
+  LoadingIndicatorState,
   OauthMessageEvent,
   QuotaState,
   RamUsageState,
@@ -47,6 +50,7 @@ import type {
   SessionStatus,
   SettingsHashState,
   SlashConflictsEvent,
+  TransientMessageEvent,
 } from './types.js';
 
 /**
@@ -69,6 +73,13 @@ export class RemoteEventAdapter {
   private activeHooksCount = 0;
   private isGenerating = false;
   private readonly sessionChangedListener: (newId: string) => void;
+  private readonly transientMessageListener: (payload: {
+    message: string;
+    type: string;
+  }) => void;
+  private readonly loadingUpdateListener: (
+    payload: LoadingIndicatorState,
+  ) => void;
   private agentsInitTimer?: NodeJS.Timeout;
 
   constructor(
@@ -104,6 +115,21 @@ export class RemoteEventAdapter {
       this.emitInitialStates();
     };
     appEvents.on(AppEvent.SessionChanged, this.sessionChangedListener);
+
+    this.transientMessageListener = (payload) => {
+      const eventPayload: TransientMessageEvent = {
+        message: payload.message,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+        type: payload.type as 'warning' | 'hint',
+      };
+      this.emit('event:system:transient_message', eventPayload);
+    };
+    appEvents.on(AppEvent.TransientMessage, this.transientMessageListener);
+
+    this.loadingUpdateListener = (payload) => {
+      this.handleState('state:system:loading_indicator', payload);
+    };
+    appEvents.on(AppEvent.LoadingUpdate, this.loadingUpdateListener);
   }
 
   private updateStatus(): void {
@@ -130,9 +156,17 @@ export class RemoteEventAdapter {
     // Also emit all current states to the newly connected callback
     this.emitInitialStates();
   }
+  /**
+   * Explicitly sets the generating state.
+   */
+  setGenerating(value: boolean): void {
+    this.isGenerating = value;
+    this.updateStatus();
+  }
 
   /**
-   * Explicitly emits the current settings hash.
+ * Explicitly emits the current settings hash.
+...
    * If a hash is provided (e.g., from a client's set action), it is used.
    * Otherwise, a new unique hash is generated.
    */
@@ -219,11 +253,24 @@ export class RemoteEventAdapter {
     event: K,
     handler: (...args: CoreEvents[K]) => void,
   ): void {
+    const wrappedHandler = (...args: unknown[]) => {
+      if (event === CoreEvent.HookStart || event === CoreEvent.McpProgress) {
+        debugLogger.debug(`[RemoteEventAdapter] RECV event: ${String(event)}`);
+      }
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+      (handler as (...args: unknown[]) => void)(...args);
+    };
+
     // @ts-expect-error - EventEmitter generic types are complex to match exactly in a generic method
-    this.coreEvents.on(event, handler);
+    this.coreEvents.on(event, wrappedHandler);
+    // @ts-expect-error - Listen to global instance as well to ensure synchronization
+    globalCoreEvents.on(event, wrappedHandler);
+
     this.unsubscribeFunctions.push(() => {
       // @ts-expect-error - EventEmitter generic types are complex
-      this.coreEvents.off(event, handler);
+      this.coreEvents.off(event, wrappedHandler);
+      // @ts-expect-error - EventEmitter generic types are complex
+      globalCoreEvents.off(event, wrappedHandler);
     });
   }
 
@@ -293,9 +340,6 @@ export class RemoteEventAdapter {
     // --- 2. EVENT Topics (Transient) ---
 
     this.subscribe(CoreEvent.Output, (p: OutputPayload) => {
-      this.isGenerating = true;
-      this.updateStatus();
-
       const content =
         typeof p.chunk === 'string'
           ? p.chunk
@@ -308,6 +352,9 @@ export class RemoteEventAdapter {
     });
 
     this.subscribe(CoreEvent.Thought, (p: ThoughtPayload) => {
+      this.isGenerating = true;
+      this.updateStatus();
+
       const payload: ChatThoughtEvent = {
         subject: p.thought.subject,
         description: p.thought.description,
@@ -407,6 +454,14 @@ export class RemoteEventAdapter {
     this.subscribe(CoreEvent.ExternalEditorClosed, () =>
       this.emit('event:system:editor_closed', {}),
     );
+
+    // Ensure we process any queued events that happened during initialization
+    if (
+      typeof (this.coreEvents as { drainBacklogs?: () => void })
+        .drainBacklogs === 'function'
+    ) {
+      (this.coreEvents as { drainBacklogs: () => void }).drainBacklogs();
+    }
   }
 
   /**
@@ -468,5 +523,7 @@ export class RemoteEventAdapter {
     }
     this.unsubscribeFunctions.length = 0;
     appEvents.off(AppEvent.SessionChanged, this.sessionChangedListener);
+    appEvents.off(AppEvent.TransientMessage, this.transientMessageListener);
+    appEvents.off(AppEvent.LoadingUpdate, this.loadingUpdateListener);
   }
 }

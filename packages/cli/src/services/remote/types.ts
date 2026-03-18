@@ -35,6 +35,12 @@ export interface McpServersState {
   servers: string[];
 }
 
+export interface LoadingIndicatorState {
+  phrase?: string;
+  elapsedTime: number;
+  status: 'idle' | 'responding' | 'waiting';
+}
+
 export interface AgentsState {
   agents: Array<{
     name: string;
@@ -98,6 +104,11 @@ export interface McpProgressEvent {
   message: string;
   progress?: number;
   total?: number;
+}
+
+export interface TransientMessageEvent {
+  message: string;
+  type: 'warning' | 'hint';
 }
 
 export interface RetryAttemptEvent {
@@ -291,8 +302,10 @@ export interface RemoteMessageRecord {
  * State Topics (re-emitted on subscription):
  * - state:system:quota
  * - state:system:memory
- * - state:system:mcp:servers
+ * - state:system:loading_indicator
+ * - state:system:ramUsage
  * - state:system:agents
+
  * - state:system:ramUsage
  * - state:session:status
  * - state:session:model
@@ -307,6 +320,7 @@ export interface RemoteMessageRecord {
  * - event:chat:user_message (for local user messages)
  * - event:system:console
  * - event:system:feedback
+ * - event:system:transient_message
  * - event:system:hook:start
  * - event:system:hook:end
  * - event:system:mcp:progress

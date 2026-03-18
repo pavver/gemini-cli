@@ -27,6 +27,13 @@ export enum AppEvent {
   RemoteCancel = 'remote-cancel',
   LocalPrompt = 'local-prompt',
   SessionChanged = 'session-changed',
+  LoadingUpdate = 'loading-update',
+}
+
+export interface LoadingUpdatePayload {
+  phrase?: string;
+  elapsedTime: number;
+  status: 'idle' | 'responding' | 'waiting';
 }
 
 export interface AppEvents {
@@ -40,6 +47,7 @@ export interface AppEvents {
   [AppEvent.RemoteCancel]: never[];
   [AppEvent.LocalPrompt]: [string];
   [AppEvent.SessionChanged]: [string];
+  [AppEvent.LoadingUpdate]: [LoadingUpdatePayload];
 }
 
 export const appEvents = new EventEmitter<AppEvents>();

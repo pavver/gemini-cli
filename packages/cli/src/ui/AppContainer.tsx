@@ -265,8 +265,21 @@ export const AppContainer = (props: AppContainerProps) => {
     () => isWorkspaceTrusted(settings.merged).isTrusted,
   );
 
-  const [queueErrorMessage, setQueueErrorMessage] = useTimedMessage<string>(
+  const [queueErrorMessage, _setQueueErrorMessage] = useTimedMessage<string>(
     QUEUE_ERROR_DISPLAY_DURATION_MS,
+  );
+
+  const setQueueErrorMessage = useCallback(
+    (message: string | null) => {
+      _setQueueErrorMessage(message);
+      if (message) {
+        appEvents.emit(AppEvent.TransientMessage, {
+          message,
+          type: TransientMessageType.Warning,
+        });
+      }
+    },
+    [_setQueueErrorMessage],
   );
 
   const [newAgents, setNewAgents] = useState<AgentDefinition[] | null>(null);
@@ -1525,10 +1538,21 @@ Logging in with Google... Restarting Gemini CLI to continue.
   const [showEscapePrompt, setShowEscapePrompt] = useState(false);
   const [showIdeRestartPrompt, setShowIdeRestartPrompt] = useState(false);
 
-  const [transientMessage, showTransientMessage] = useTimedMessage<{
+  const [transientMessage, _showTransientMessage] = useTimedMessage<{
     text: string;
     type: TransientMessageType;
   }>(WARNING_PROMPT_DURATION_MS);
+
+  const showTransientMessage = useCallback(
+    (payload: { text: string; type: TransientMessageType }) => {
+      _showTransientMessage(payload);
+      appEvents.emit(AppEvent.TransientMessage, {
+        message: payload.text,
+        type: payload.type,
+      });
+    },
+    [_showTransientMessage],
+  );
 
   const {
     isFolderTrustDialogOpen,
@@ -1671,6 +1695,21 @@ Logging in with Google... Restarting Gemini CLI to continue.
     customWittyPhrases: settings.merged.ui.customWittyPhrases,
     errorVerbosity: settings.merged.ui.errorVerbosity,
   });
+
+  useEffect(() => {
+    let status: 'idle' | 'responding' | 'waiting' = 'idle';
+    if (streamingState === StreamingState.Responding) {
+      status = 'responding';
+    } else if (streamingState === StreamingState.WaitingForConfirmation) {
+      status = 'waiting';
+    }
+
+    appEvents.emit(AppEvent.LoadingUpdate, {
+      phrase: currentLoadingPhrase,
+      elapsedTime,
+      status,
+    });
+  }, [elapsedTime, currentLoadingPhrase, streamingState]);
 
   const handleGlobalKeypress = useCallback(
     (key: Key): boolean => {
