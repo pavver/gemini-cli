@@ -26,7 +26,11 @@ import {
   type CoreEvents,
   type Config,
 } from '@google/gemini-cli-core';
-import { appEvents, AppEvent } from '../../utils/events.js';
+import {
+  appEvents,
+  AppEvent,
+  type LoadingUpdatePayload,
+} from '../../utils/events.js';
 import type {
   AgentsState,
   ChatStreamEvent,
@@ -36,11 +40,12 @@ import type {
   FeedbackEvent,
   HookEndEvent,
   HookStartEvent,
+  LoadingElapsedState,
+  LoadingPhraseState,
   McpProgressEvent,
   McpServersState,
   MemoryState,
   ModelState,
-  LoadingIndicatorState,
   OauthMessageEvent,
   QuotaState,
   RamUsageState,
@@ -77,7 +82,7 @@ export class RemoteEventAdapter {
     type: string;
   }) => void;
   private readonly loadingUpdateListener: (
-    payload: LoadingIndicatorState,
+    payload: LoadingUpdatePayload,
   ) => void;
   private agentsInitTimer?: NodeJS.Timeout;
 
@@ -126,7 +131,24 @@ export class RemoteEventAdapter {
     appEvents.on(AppEvent.TransientMessage, this.transientMessageListener);
 
     this.loadingUpdateListener = (payload) => {
-      this.handleState('state:system:loading_indicator', payload);
+      // 1. Update overall session status based on loading indicator (Source of Truth)
+      let agentStatus: SessionStatus = 'idle';
+      if (payload.status === 'responding') {
+        agentStatus = 'generating';
+      } else if (payload.status === 'waiting') {
+        agentStatus = 'busy';
+      }
+      this.handleState('state:session:status', { status: agentStatus });
+
+      // 2. Emit loading phrase (deduplicated by handleState)
+      this.handleState('state:system:loading_phrase', {
+        phrase: payload.phrase || null,
+      } as LoadingPhraseState);
+
+      // 3. Emit elapsed time (every second)
+      this.handleState('state:system:loading_elapsed', {
+        elapsed: payload.elapsedTime,
+      } as LoadingElapsedState);
     };
     appEvents.on(AppEvent.LoadingUpdate, this.loadingUpdateListener);
   }
