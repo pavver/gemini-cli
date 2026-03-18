@@ -48,7 +48,9 @@ import type {
   ModelState,
   OauthMessageEvent,
   QuotaState,
-  RamUsageState,
+  RamHeapTotalState,
+  RamHeapUsedState,
+  RamRssState,
   RetryAttemptEvent,
   SessionIdState,
   SessionStatus,
@@ -254,17 +256,23 @@ export class RemoteEventAdapter {
   }
 
   /**
- * Explicitly emits current RAM usage.
-...
+   * Explicitly emits current RAM usage.
+   * Called by RemoteApiService on a periodic timer.
    */
   emitRamUsage(): void {
     const usage = process.memoryUsage();
-    const payload: RamUsageState = {
+
+    this.handleState('state:system:ram:rss', {
       rss: usage.rss,
+    } as RamRssState);
+
+    this.handleState('state:system:ram:heap_total', {
       heapTotal: usage.heapTotal,
+    } as RamHeapTotalState);
+
+    this.handleState('state:system:ram:heap_used', {
       heapUsed: usage.heapUsed,
-    };
-    this.handleState('state:system:ramUsage', payload);
+    } as RamHeapUsedState);
   }
 
   /**

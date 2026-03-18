@@ -35,10 +35,12 @@ export interface McpServersState {
   servers: string[];
 }
 
-export interface LoadingIndicatorState {
-  phrase?: string;
-  elapsedTime: number;
-  status: 'idle' | 'responding' | 'waiting';
+export interface LoadingPhraseState {
+  phrase: string | null;
+}
+
+export interface LoadingElapsedState {
+  elapsed: number;
 }
 
 export interface AgentsState {
@@ -50,9 +52,15 @@ export interface AgentsState {
   }>;
 }
 
-export interface RamUsageState {
+export interface RamRssState {
   rss: number;
+}
+
+export interface RamHeapTotalState {
   heapTotal: number;
+}
+
+export interface RamHeapUsedState {
   heapUsed: number;
 }
 
@@ -302,8 +310,11 @@ export interface RemoteMessageRecord {
  * State Topics (re-emitted on subscription):
  * - state:system:quota
  * - state:system:memory
- * - state:system:loading_indicator
- * - state:system:ramUsage
+ * - state:system:loading_phrase
+ * - state:system:loading_elapsed
+ * - state:system:ram:rss
+ * - state:system:ram:heap_total
+ * - state:system:ram:heap_used
  * - state:system:agents
 
  * - state:system:ramUsage
