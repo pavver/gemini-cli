@@ -228,6 +228,41 @@ export const AppContainer = (props: AppContainerProps) => {
     chatRecordingService: config.getGeminiClient()?.getChatRecordingService(),
   });
 
+  // Central bridge to synchronize UI messages with the system event bus (Remote API)
+  const isProcessingSystemEvent = useRef(false);
+  const addItem = useCallback(
+    (
+      itemData: Omit<HistoryItem, 'id'>,
+      baseTimestamp?: number,
+      isResuming?: boolean,
+    ) => {
+      const id = historyManager.addItem(itemData, baseTimestamp, isResuming);
+
+      // If this is a UI-generated system message (not from an incoming system event),
+      // bridge it to the system bus so remote clients can see it.
+      if (!isProcessingSystemEvent.current && !isResuming) {
+        if (
+          itemData.type === 'info' ||
+          itemData.type === 'warning' ||
+          itemData.type === 'error'
+        ) {
+          // Use setTimeout to ensure we don't interfere with the current React render cycle
+          setTimeout(() => {
+            coreEvents.emit(CoreEvent.UserFeedback, {
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+              severity: itemData.type as 'info' | 'warning' | 'error',
+              message: itemData.text ?? '',
+              // @ts-expect-error - Custom property to identify source and prevent TUI duplication
+              isForwardedFromUI: true,
+            });
+          }, 0);
+        }
+      }
+      return id;
+    },
+    [historyManager],
+  );
+
   useMemoryMonitor(historyManager);
   const isAlternateBuffer = config.getUseAlternateBuffer();
   const [corgiMode, setCorgiMode] = useState(false);
@@ -339,7 +374,7 @@ export const AppContainer = (props: AppContainerProps) => {
     dispatchExtensionStateUpdate,
   } = useExtensionUpdates(
     extensionManager,
-    historyManager.addItem,
+    addItem,
     config.getEnableExtensionReloading(),
   );
 
@@ -452,7 +487,7 @@ export const AppContainer = (props: AppContainerProps) => {
 
       if (result) {
         if (result.systemMessage) {
-          historyManager.addItem(
+          addItem(
             {
               type: MessageType.INFO,
               text: result.systemMessage,
@@ -501,10 +536,7 @@ export const AppContainer = (props: AppContainerProps) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config, resumedSessionData]);
 
-  useEffect(
-    () => setUpdateHandler(historyManager.addItem, setUpdateInfo),
-    [historyManager.addItem],
-  );
+  useEffect(() => setUpdateHandler(addItem, setUpdateInfo), [addItem]);
 
   // Subscribe to fallback mode and model changes from core
   useEffect(() => {
@@ -604,7 +636,7 @@ export const AppContainer = (props: AppContainerProps) => {
   // One-time prompt to suggest running /terminal-setup when it would help.
   useTerminalSetupPrompt({
     addConfirmUpdateExtensionRequest,
-    addItem: historyManager.addItem,
+    addItem,
   });
 
   const refreshStatic = useCallback(() => {
@@ -638,7 +670,7 @@ export const AppContainer = (props: AppContainerProps) => {
     openEditorDialog,
     handleEditorSelect,
     exitEditorDialog,
-  } = useEditorSettings(settings, setEditorError, historyManager.addItem);
+  } = useEditorSettings(settings, setEditorError, addItem);
 
   useEffect(() => {
     coreEvents.on(CoreEvent.ExternalEditorClosed, handleEditorClose);
@@ -673,7 +705,7 @@ export const AppContainer = (props: AppContainerProps) => {
   } = useThemeCommand(
     settings,
     setThemeError,
-    historyManager.addItem,
+    addItem,
     initializationResult.themeError,
     refreshStatic,
   );
@@ -970,7 +1002,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
   } = useSlashCommandProcessor(
     config,
     settings,
-    historyManager.addItem,
+    addItem,
     historyManager.clearItems,
     historyManager.loadHistory,
     refreshStatic,
@@ -1006,7 +1038,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
   }, []);
 
   const performMemoryRefresh = useCallback(async () => {
-    historyManager.addItem(
+    addItem(
       {
         type: MessageType.INFO,
         text: 'Refreshing hierarchical memory (GEMINI.md or other context files)...',
@@ -1019,7 +1051,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
 
       const flattenedMemory = flattenMemory(memoryContent);
 
-      historyManager.addItem(
+      addItem(
         {
           type: MessageType.INFO,
           text: `Memory reloaded successfully. ${
@@ -1040,7 +1072,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
       }
     } catch (error) {
       const errorMessage = getErrorMessage(error);
-      historyManager.addItem(
+      addItem(
         {
           type: MessageType.ERROR,
           text: `Error refreshing memory: ${errorMessage}`,
@@ -1049,7 +1081,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
       );
       debugLogger.warn('Error refreshing memory:', error);
     }
-  }, [config, historyManager]);
+  }, [config, addItem]);
 
   const cancelHandlerRef = useRef<(shouldRestorePrompt?: boolean) => void>(
     () => {},
@@ -1128,7 +1160,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
   } = useGeminiStream(
     config.getGeminiClient(),
     historyManager.history,
-    historyManager.addItem,
+    addItem,
     config,
     settings,
     setDebugMessage,
@@ -1261,12 +1293,12 @@ Logging in with Google... Restarting Gemini CLI to continue.
       }
       config.userHintService.addUserHint(trimmed);
       // Render hints with a distinct style.
-      historyManager.addItem({
+      addItem({
         type: 'hint',
         text: trimmed,
       });
     },
-    [config, historyManager],
+    [config, addItem],
   );
 
   const handleFinalSubmit = useCallback(
@@ -1559,7 +1591,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
     discoveryResults: folderDiscoveryResults,
     handleFolderTrustSelect,
     isRestarting,
-  } = useFolderTrust(settings, setIsTrustedFolder, historyManager.addItem);
+  } = useFolderTrust(settings, setIsTrustedFolder, addItem);
 
   const policyUpdateConfirmationRequest =
     config.getPolicyUpdateConfirmationRequest();
@@ -1967,6 +1999,12 @@ Logging in with Google... Restarting Gemini CLI to continue.
 
   useEffect(() => {
     const handleUserFeedback = (payload: UserFeedbackPayload) => {
+      // Ignore events that we just forwarded from the UI to avoid TUI duplication
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+      if ((payload as { isForwardedFromUI?: boolean }).isForwardedFromUI) {
+        return;
+      }
+
       let type: MessageType;
       switch (payload.severity) {
         case 'error':
@@ -1984,13 +2022,15 @@ Logging in with Google... Restarting Gemini CLI to continue.
           );
       }
 
-      historyManager.addItem(
+      isProcessingSystemEvent.current = true;
+      addItem(
         {
           type,
           text: payload.message,
         },
         Date.now(),
       );
+      isProcessingSystemEvent.current = false;
 
       // If there is an attached error object, log it to the debug drawer.
       if (payload.error) {
@@ -2010,7 +2050,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
     return () => {
       coreEvents.off(CoreEvent.UserFeedback, handleUserFeedback);
     };
-  }, [historyManager]);
+  }, [addItem]);
 
   const filteredConsoleMessages = useMemo(() => {
     if (config.getDebugMode()) {
@@ -2094,7 +2134,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
 
   const showApprovalModeIndicator = useApprovalModeIndicator({
     config,
-    addItem: historyManager.addItem,
+    addItem,
     onApprovalModeChange: handleApprovalModeChangeWithUiReveal,
     isActive: !embeddedShellFocused,
     allowPlanMode,
@@ -2541,7 +2581,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
             );
           } catch (error) {
             debugLogger.error('Failed to acknowledge agents:', error);
-            historyManager.addItem(
+            addItem(
               {
                 type: MessageType.ERROR,
                 text: `Failed to acknowledge agents: ${getErrorMessage(error)}`,
@@ -2559,6 +2599,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
       },
     }),
     [
+      addItem,
       handleThemeSelect,
       closeThemeDialog,
       handleThemeHighlight,
@@ -2610,7 +2651,6 @@ Logging in with Google... Restarting Gemini CLI to continue.
       setAccountSuspensionInfo,
       newAgents,
       config,
-      historyManager,
       getPreferredEditor,
     ],
   );

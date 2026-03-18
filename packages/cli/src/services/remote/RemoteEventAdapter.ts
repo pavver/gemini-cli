@@ -31,6 +31,7 @@ import {
   AppEvent,
   type LoadingUpdatePayload,
 } from '../../utils/events.js';
+import { updateEventEmitter } from '../../utils/updateEventEmitter.js';
 import type {
   AgentsState,
   ChatStreamEvent,
@@ -94,7 +95,20 @@ export class RemoteEventAdapter {
     private readonly coreEvents: CoreEventEmitter,
     private readonly config: Config,
     private geminiSessionId?: string,
+    initialFeedbacks?: FeedbackEvent[],
   ) {
+    if (initialFeedbacks) {
+      // Seed the buffer with startup warnings
+      for (const fb of initialFeedbacks) {
+        if (
+          !this.recentFeedbacks.some(
+            (existing) => existing.message === fb.message,
+          )
+        ) {
+          this.recentFeedbacks.push(fb);
+        }
+      }
+    }
     this.setupSubscriptions();
     if (this.geminiSessionId) {
       this.handleState('state:session:id', {
@@ -407,9 +421,11 @@ export class RemoteEventAdapter {
       };
 
       // Store in recent list for late-connecting clients
-      this.recentFeedbacks.push(payload);
-      if (this.recentFeedbacks.length > 20) {
-        this.recentFeedbacks.shift(); // Keep only last 20
+      if (!this.recentFeedbacks.some((f) => f.message === payload.message)) {
+        this.recentFeedbacks.push(payload);
+        if (this.recentFeedbacks.length > 20) {
+          this.recentFeedbacks.shift();
+        }
       }
 
       this.emit('event:system:feedback', payload);
@@ -418,9 +434,41 @@ export class RemoteEventAdapter {
       } as RecentFeedbacksState);
     });
 
+    // Capture auto-update events PASSIVELY
+    const updateHandler = (data: { message: string }) => {
+      const payload: FeedbackEvent = {
+        severity: 'info',
+        message: data.message,
+      };
+
+      if (!this.recentFeedbacks.some((f) => f.message === payload.message)) {
+        this.recentFeedbacks.push(payload);
+      }
+
+      this.emit('event:system:feedback', payload);
+      this.handleState('state:system:recent_feedbacks', {
+        feedbacks: this.recentFeedbacks,
+      } as RecentFeedbacksState);
+    };
+    updateEventEmitter.on('update-received', updateHandler);
+    updateEventEmitter.on('update-info', updateHandler);
+    updateEventEmitter.on('update-success', updateHandler);
+    updateEventEmitter.on('update-failed', (data: { message: string }) => {
+      const payload: FeedbackEvent = {
+        severity: 'error',
+        message: data.message,
+      };
+      this.emit('event:system:feedback', payload);
+    });
+
+    this.unsubscribeFunctions.push(() => {
+      updateEventEmitter.off('update-received', updateHandler);
+      updateEventEmitter.off('update-info', updateHandler);
+      updateEventEmitter.off('update-success', updateHandler);
+    });
+
     this.subscribe(CoreEvent.HookStart, (p: HookStartPayload) => {
       this.activeHooksCount++;
-      this.isGenerating = false;
       this.updateStatus();
 
       const payload: HookStartEvent = {
