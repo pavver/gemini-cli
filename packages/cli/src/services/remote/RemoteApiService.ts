@@ -94,11 +94,13 @@ export class RemoteApiService {
     config: Config,
     private readonly loadedSettings: LoadedSettings,
     geminiSessionId?: string,
+    initialWarnings?: string[],
   ) {
     this.eventAdapter = new RemoteEventAdapter(
       coreEvents,
       config,
       geminiSessionId,
+      initialWarnings?.map((w) => ({ severity: 'info', message: w })),
     );
     this.eventAdapter.onEmit((message) => {
       this.broadcastToSubscribers(message.topic, message.payload);
@@ -281,11 +283,15 @@ export class RemoteApiService {
     }, 30000);
 
     const message = `Remote API server listening on 127.0.0.1:${this.port}`;
-    this.coreEvents.emit(CoreEvent.UserFeedback, {
-      severity: 'info',
-      message,
-    });
     debugLogger.log(message);
+
+    // Delayed emission to ensure TUI listener is ready
+    setTimeout(() => {
+      this.coreEvents.emit(CoreEvent.UserFeedback, {
+        severity: 'info',
+        message,
+      });
+    }, 1000);
   }
 
   /**

@@ -695,14 +695,7 @@ export async function main() {
 
     // Add Remote API notification to startup warnings
     if (argv.remote) {
-      if (argv.remoteToken) {
-        const port = argv.remotePort ?? 8100;
-        startupWarnings.push({
-          id: 'remote-api-status',
-          message: `Remote API is active at ws://127.0.0.1:${port} (token: ${argv.remoteToken})`,
-          priority: WarningPriority.High,
-        });
-      } else {
+      if (!argv.remoteToken) {
         startupWarnings.push({
           id: 'remote-api-error',
           message: 'Remote API failed to start: --remote-token is mandatory!',
@@ -749,11 +742,13 @@ export async function main() {
 
     // Handle --remote flag for Remote API WebSocket Server
     if (argv.remote && argv.remoteToken) {
+      const port = argv.remotePort ?? 8100;
+
       const { RemoteApiService } = await import(
         './services/remote/RemoteApiService.js'
       );
       const remoteService = new RemoteApiService(
-        argv.remotePort ?? 8100,
+        port,
         argv.remoteToken,
         coreEvents,
         config.getMessageBus(),
@@ -761,6 +756,7 @@ export async function main() {
         config,
         settings,
         sessionId,
+        startupWarnings.map((w) => w.message),
       );
 
       await remoteService.start();
