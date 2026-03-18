@@ -204,6 +204,20 @@ export class RemoteApiService {
     }
   }
 
+  /**
+   * Manually emits an event to all subscribers.
+   */
+  emitEvent(topic: string, payload: unknown): void {
+    this.broadcastToSubscribers(topic, payload);
+  }
+
+  /**
+   * Manually emits a state change to all subscribers.
+   */
+  emitState(topic: string, payload: unknown): void {
+    this.eventAdapter.emitState(topic, payload);
+  }
+
   private relayMessageBus(): void {
     // Tool confirmation requests need to be queued
     this.messageBus.subscribe(
@@ -262,12 +276,16 @@ export class RemoteApiService {
       this.handleConnection(ws, req);
     });
 
-    // Start RAM usage updates
     this.ramUpdateTimer = setInterval(() => {
       this.eventAdapter.emitRamUsage();
     }, 30000);
 
-    debugLogger.log(`Remote API server listening on 127.0.0.1:${this.port}`);
+    const message = `Remote API server listening on 127.0.0.1:${this.port}`;
+    this.coreEvents.emit(CoreEvent.UserFeedback, {
+      severity: 'info',
+      message,
+    });
+    debugLogger.log(message);
   }
 
   /**
@@ -443,6 +461,10 @@ export class RemoteApiService {
   }
 
   private handleChatSend(action: ChatSendAction) {
+    this.eventAdapter.setGenerating(true);
+    this.broadcastToSubscribers('event:chat:user_message', {
+      text: action.text,
+    });
     appEvents.emit(AppEvent.RemotePrompt, action.text);
     this.updateLastMessageId();
   }

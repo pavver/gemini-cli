@@ -43,6 +43,10 @@ export interface LoadingElapsedState {
   elapsed: number;
 }
 
+export interface RecentFeedbacksState {
+  feedbacks: FeedbackEvent[];
+}
+
 export interface AgentsState {
   agents: Array<{
     name: string;

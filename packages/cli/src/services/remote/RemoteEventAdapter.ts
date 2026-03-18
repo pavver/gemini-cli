@@ -51,6 +51,7 @@ import type {
   RamHeapTotalState,
   RamHeapUsedState,
   RamRssState,
+  RecentFeedbacksState,
   RetryAttemptEvent,
   SessionIdState,
   SessionStatus,
@@ -74,6 +75,7 @@ export interface RemoteEventMessage {
  */
 export class RemoteEventAdapter {
   private readonly stateCache = new Map<string, string>();
+  private readonly recentFeedbacks: FeedbackEvent[] = [];
   private onEmitCallback?: (message: RemoteEventMessage) => void;
   private readonly unsubscribeFunctions: Array<() => void> = [];
   private activeHooksCount = 0;
@@ -106,8 +108,9 @@ export class RemoteEventAdapter {
     this.sessionChangedListener = (newId) => {
       // 1. Clear state cache to prevent leaking state between sessions
       this.stateCache.clear();
-
+      this.recentFeedbacks.length = 0;
       this.geminiSessionId = newId;
+
       this.handleState('state:session:id', {
         id: newId,
       } as SessionIdState);
@@ -402,7 +405,17 @@ export class RemoteEventAdapter {
         severity: p.severity,
         message: p.message,
       };
+
+      // Store in recent list for late-connecting clients
+      this.recentFeedbacks.push(payload);
+      if (this.recentFeedbacks.length > 20) {
+        this.recentFeedbacks.shift(); // Keep only last 20
+      }
+
       this.emit('event:system:feedback', payload);
+      this.handleState('state:system:recent_feedbacks', {
+        feedbacks: this.recentFeedbacks,
+      } as RecentFeedbacksState);
     });
 
     this.subscribe(CoreEvent.HookStart, (p: HookStartPayload) => {
