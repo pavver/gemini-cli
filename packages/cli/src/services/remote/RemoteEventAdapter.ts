@@ -5,6 +5,9 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import * as fs from 'node:fs';
+import * as fsPromises from 'node:fs/promises';
+import * as path from 'node:path';
 import {
   type CoreEventEmitter,
   CoreEvent,
@@ -25,13 +28,22 @@ import {
   type ThoughtPayload,
   type CoreEvents,
   type Config,
+  uiTelemetryService,
+  spawnAsync,
+  tokenLimit,
+  isActiveModel,
+  getDisplayString,
+  AuthType,
+  UserAccountManager,
 } from '@google/gemini-cli-core';
+
+import { computeSessionStats } from '../../ui/utils/computeStats.js';
+
 import {
   appEvents,
   AppEvent,
   type LoadingUpdatePayload,
 } from '../../utils/events.js';
-import { updateEventEmitter } from '../../utils/updateEventEmitter.js';
 import type {
   AgentsState,
   ChatStreamEvent,
@@ -39,6 +51,7 @@ import type {
   ConsoleLogEvent,
   EditorState,
   FeedbackEvent,
+  GitBranchState,
   HookEndEvent,
   HookStartEvent,
   LoadingElapsedState,
@@ -48,6 +61,7 @@ import type {
   MemoryState,
   ModelState,
   OauthMessageEvent,
+  ProjectInfoState,
   QuotaState,
   RamHeapTotalState,
   RamHeapUsedState,
@@ -58,6 +72,10 @@ import type {
   SessionStatus,
   SettingsHashState,
   SlashConflictsEvent,
+  StatsFullResponse,
+  ModelStats,
+  TokensLimitState,
+  TokensTotalState,
   TransientMessageEvent,
 } from './types.js';
 
@@ -81,6 +99,9 @@ export class RemoteEventAdapter {
   private readonly unsubscribeFunctions: Array<() => void> = [];
   private activeHooksCount = 0;
   private isGenerating = false;
+  private readonly startTime: number = Date.now();
+  private readonly projectRoot: string;
+  private gitWatcher?: fs.FSWatcher;
   private readonly sessionChangedListener: (newId: string) => void;
   private readonly transientMessageListener: (payload: {
     message: string;
@@ -97,6 +118,7 @@ export class RemoteEventAdapter {
     private geminiSessionId?: string,
     initialFeedbacks?: FeedbackEvent[],
   ) {
+    this.projectRoot = process.cwd();
     if (initialFeedbacks) {
       // Seed the buffer with startup warnings
       for (const fb of initialFeedbacks) {
@@ -225,6 +247,9 @@ export class RemoteEventAdapter {
     const model = this.config.getModel();
     if (model) {
       this.handleState('state:session:model', { model } as ModelState);
+      this.handleState('state:system:tokens:limit', {
+        limit: tokenLimit(model),
+      } as TokensLimitState);
     }
 
     // 2. RAM Usage
@@ -246,6 +271,12 @@ export class RemoteEventAdapter {
 
     // 4. Agents
     this.tryEmitAgents();
+
+    // 5. Project Info
+    this.emitProjectInfo();
+
+    // 6. Git Branch
+    void this.fetchGitBranch();
   }
   /**
    * Tries to emit agents. If registry is not ready, starts a timer to retry.
@@ -368,6 +399,9 @@ export class RemoteEventAdapter {
     this.subscribe(CoreEvent.ModelChanged, (p: ModelChangedPayload) => {
       const payload: ModelState = { model: p.model };
       this.handleState('state:session:model', payload);
+      this.handleState('state:system:tokens:limit', {
+        limit: tokenLimit(p.model),
+      } as TokensLimitState);
     });
 
     this.subscribe(CoreEvent.SettingsChanged, () => {
@@ -378,6 +412,39 @@ export class RemoteEventAdapter {
       const payload: EditorState = { editor: p.editor };
       this.handleState('state:session:editor', payload);
     });
+
+    // --- 1.5 Telemetry & System state ---
+
+    const telemetryHandler = () => {
+      const metrics = uiTelemetryService.getMetrics();
+      const lastTokens = uiTelemetryService.getLastPromptTokenCount();
+
+      // Aggregate tokens across all models for real-time context bar
+      let grandTotal = 0;
+      const modelKeys = Object.keys(metrics.models);
+
+      for (const key of modelKeys) {
+        const m = metrics.models[key];
+        grandTotal += m.tokens.total;
+      }
+
+      if (grandTotal > 0) {
+        this.handleState('state:system:tokens:total', {
+          total: grandTotal,
+        } as TokensTotalState);
+      } else if (lastTokens > 0) {
+        this.handleState('state:system:tokens:total', {
+          total: lastTokens,
+        } as TokensTotalState);
+      }
+    };
+
+    uiTelemetryService.on('update', telemetryHandler);
+    this.unsubscribeFunctions.push(() => {
+      uiTelemetryService.off('update', telemetryHandler);
+    });
+
+    this.setupGitWatcher();
 
     // --- 2. EVENT Topics (Transient) ---
 
@@ -434,38 +501,7 @@ export class RemoteEventAdapter {
       } as RecentFeedbacksState);
     });
 
-    // Capture auto-update events PASSIVELY
-    const updateHandler = (data: { message: string }) => {
-      const payload: FeedbackEvent = {
-        severity: 'info',
-        message: data.message,
-      };
-
-      if (!this.recentFeedbacks.some((f) => f.message === payload.message)) {
-        this.recentFeedbacks.push(payload);
-      }
-
-      this.emit('event:system:feedback', payload);
-      this.handleState('state:system:recent_feedbacks', {
-        feedbacks: this.recentFeedbacks,
-      } as RecentFeedbacksState);
-    };
-    updateEventEmitter.on('update-received', updateHandler);
-    updateEventEmitter.on('update-info', updateHandler);
-    updateEventEmitter.on('update-success', updateHandler);
-    updateEventEmitter.on('update-failed', (data: { message: string }) => {
-      const payload: FeedbackEvent = {
-        severity: 'error',
-        message: data.message,
-      };
-      this.emit('event:system:feedback', payload);
-    });
-
-    this.unsubscribeFunctions.push(() => {
-      updateEventEmitter.off('update-received', updateHandler);
-      updateEventEmitter.off('update-info', updateHandler);
-      updateEventEmitter.off('update-success', updateHandler);
-    });
+    this.setupGitWatcher();
 
     this.subscribe(CoreEvent.HookStart, (p: HookStartPayload) => {
       this.activeHooksCount++;
@@ -611,5 +647,185 @@ export class RemoteEventAdapter {
     appEvents.off(AppEvent.SessionChanged, this.sessionChangedListener);
     appEvents.off(AppEvent.TransientMessage, this.transientMessageListener);
     appEvents.off(AppEvent.LoadingUpdate, this.loadingUpdateListener);
+    this.gitWatcher?.close();
+  }
+
+  private emitProjectInfo(): void {
+    const payload: ProjectInfoState = {
+      name: path.basename(this.projectRoot),
+      path: this.projectRoot,
+    };
+    this.handleState('state:system:project_info', payload);
+  }
+
+  private async fetchGitBranch(): Promise<void> {
+    try {
+      const { stdout } = await spawnAsync(
+        'git',
+        ['rev-parse', '--abbrev-ref', 'HEAD'],
+        { cwd: this.projectRoot },
+      );
+      const branch = stdout.toString().trim();
+      const payload: GitBranchState = {
+        branch: branch && branch !== 'HEAD' ? branch : null,
+      };
+      this.handleState('state:system:git_branch', payload);
+    } catch (_error) {
+      this.handleState('state:system:git_branch', { branch: null });
+    }
+  }
+
+  private setupGitWatcher(): void {
+    const gitLogsHeadPath = path.join(this.projectRoot, '.git', 'logs', 'HEAD');
+
+    const startWatcher = async () => {
+      try {
+        await fsPromises.access(gitLogsHeadPath, fs.constants.F_OK);
+        this.gitWatcher = fs.watch(gitLogsHeadPath, (eventType) => {
+          if (eventType === 'change' || eventType === 'rename') {
+            void this.fetchGitBranch();
+          }
+        });
+      } catch (_error) {
+        // No git repo or logs/HEAD not accessible
+      }
+    };
+
+    void startWatcher();
+    void this.fetchGitBranch();
+  }
+
+  /**
+   * Generates a full session stats report.
+   */
+  async getSessionStats(correlationId: string): Promise<StatsFullResponse> {
+    const quota = await this.config.refreshUserQuota();
+    try {
+      await this.config.refreshAvailableCredits();
+    } catch (e) {
+      debugLogger.debug('[RemoteStats] Failed to force refresh credits:', e);
+    }
+
+    const metrics = uiTelemetryService.getMetrics();
+    const buckets = quota?.buckets || [];
+    const modelStats: ModelStats[] = [];
+
+    const useGemini3_1 = this.config.getGemini31LaunchedSync?.() ?? false;
+    const generatorConfig = this.config.getContentGeneratorConfig?.();
+    const useCustomToolModel =
+      useGemini3_1 && generatorConfig?.authType === AuthType.USE_GEMINI;
+
+    const getBaseModelName = (name: string) => name.replace('-001', '');
+    const usedModelNames = new Set(
+      Object.keys(metrics.models).map(getBaseModelName).map(getDisplayString),
+    );
+
+    // 1. Models with active usage
+    for (const [name, m] of Object.entries(metrics.models)) {
+      const modelBaseName = getBaseModelName(name);
+      const bucket = buckets.find((b) => b.modelId === modelBaseName);
+
+      const stats: ModelStats = {
+        model: getDisplayString(modelBaseName),
+        requests: m.api.totalRequests,
+        inputTokens: m.tokens.input,
+        outputTokens: m.tokens.candidates,
+        cacheReads: m.tokens.cached,
+      };
+
+      if (bucket && bucket.remainingFraction != null) {
+        const resetDate = bucket.resetTime
+          ? new Date(bucket.resetTime)
+          : undefined;
+        const isValidDate = resetDate && !isNaN(resetDate.getTime());
+
+        let resetSeconds: number | undefined;
+        if (isValidDate) {
+          resetSeconds = Math.max(
+            0,
+            Math.floor((resetDate.getTime() - Date.now()) / 1000),
+          );
+        }
+
+        stats.quota = {
+          percentage: Math.round((1 - bucket.remainingFraction) * 100),
+          resetSeconds,
+        };
+      }
+
+      modelStats.push(stats);
+    }
+
+    // 2. Models with quota only (not yet used)
+    const quotaOnlyBuckets = buckets.filter(
+      (b) =>
+        b.modelId &&
+        isActiveModel(b.modelId, useGemini3_1, useCustomToolModel) &&
+        !usedModelNames.has(getDisplayString(b.modelId)),
+    );
+
+    for (const bucket of quotaOnlyBuckets) {
+      if (!bucket.modelId || bucket.remainingFraction == null) continue;
+
+      const resetDate = bucket.resetTime
+        ? new Date(bucket.resetTime)
+        : undefined;
+      const isValidDate = resetDate && !isNaN(resetDate.getTime());
+
+      let resetSeconds: number | undefined;
+      if (isValidDate) {
+        resetSeconds = Math.max(
+          0,
+          Math.floor((resetDate.getTime() - Date.now()) / 1000),
+        );
+      }
+
+      modelStats.push({
+        model: getDisplayString(bucket.modelId),
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReads: 0,
+        quota: {
+          percentage: Math.round((1 - bucket.remainingFraction) * 100),
+          resetSeconds,
+        },
+      });
+    }
+
+    // 3. Session Summary
+    const computed = computeSessionStats(metrics);
+    const wallTimeSeconds = Math.floor((Date.now() - this.startTime) / 1000);
+
+    const userAccountManager = new UserAccountManager();
+    const cachedAccount = userAccountManager.getCachedGoogleAccount();
+    const userEmail = cachedAccount ?? undefined;
+
+    const tier = this.config.getUserTierName();
+    const authMethod = generatorConfig?.authType || 'unknown';
+
+    const summary = {
+      sessionId: this.geminiSessionId || 'unknown',
+      authMethod,
+      userEmail,
+      tier,
+      toolCalls: {
+        total: metrics.tools.totalCalls,
+        success: metrics.tools.totalSuccess,
+        fail: metrics.tools.totalFail,
+      },
+      successRate: computed.successRate,
+      wallTimeSeconds,
+      agentActiveSeconds: Math.floor(computed.agentActiveTime / 1000),
+      apiTimeSeconds: Math.floor(computed.totalApiTime / 1000),
+      toolTimeSeconds: Math.floor(computed.totalToolTime / 1000),
+    };
+
+    return {
+      type: 'response:stats:full',
+      correlationId,
+      models: modelStats,
+      summary,
+    };
   }
 }

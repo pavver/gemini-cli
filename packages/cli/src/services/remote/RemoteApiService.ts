@@ -33,6 +33,7 @@ import {
   type ChatGetHistoryPageAction,
   type SettingsGetAction,
   type SettingsSetAction,
+  type StatsGetAction,
   type RemoteMessageRecord,
   type RemoteToolCallRecord,
   type RemoteThoughtSummary,
@@ -435,6 +436,9 @@ export class RemoteApiService {
         break;
       case 'confirm:ask_user:reply':
         this.handleAskUserReply(message);
+        break;
+      case 'stats:get':
+        await this.handleStatsGet(session, message);
         break;
       default: {
         const { action } = message as { action: string };
@@ -888,12 +892,15 @@ export class RemoteApiService {
     if (this.ramUpdateTimer) {
       clearInterval(this.ramUpdateTimer);
     }
+
+    // Always dispose adapter to clean up global event listeners
+    this.eventAdapter.dispose();
+
     if (this.wss) {
       this.wss.close();
       this.sessions.forEach((s) => s.ws.terminate());
       this.sessions.clear();
       this.lockedIps.clear();
-      this.eventAdapter.dispose();
       this.pendingConfirmations.length = 0;
 
       // Cleanup listeners
@@ -904,5 +911,10 @@ export class RemoteApiService {
 
       debugLogger.log('Remote API server stopped');
     }
+  }
+
+  private async handleStatsGet(session: RemoteSession, action: StatsGetAction) {
+    const stats = await this.eventAdapter.getSessionStats(action.correlationId);
+    session.ws.send(JSON.stringify(stats));
   }
 }
