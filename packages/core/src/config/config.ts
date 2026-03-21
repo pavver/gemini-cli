@@ -1574,6 +1574,16 @@ export class Config implements McpContext {
     return this.modelQuotas.get(primaryModel)?.resetTime;
   }
 
+  /**
+   * Returns a snapshot of all tracked model quotas.
+   */
+  getModelQuotas(): ReadonlyMap<
+    string,
+    { remaining: number; limit: number; resetTime?: string }
+  > {
+    return new Map(this.modelQuotas);
+  }
+
   getEmbeddingModel(): string {
     return this.embeddingModel;
   }
