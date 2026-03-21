@@ -68,6 +68,49 @@ export interface RamHeapUsedState {
   heapUsed: number;
 }
 
+export interface GitBranchState {
+  branch: string | null;
+}
+
+export interface TokensInputState {
+  input: number;
+}
+
+export interface TokensOutputState {
+  output: number;
+}
+
+export interface TokensCachedState {
+  cached: number;
+}
+
+export interface TokensTotalState {
+  total: number;
+}
+
+export interface TokensLimitState {
+  limit: number;
+}
+
+export interface ModelQuota {
+  percentage: number;
+  resetSeconds?: number;
+}
+
+export interface ModelStats {
+  model: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReads: number;
+  quota?: ModelQuota;
+}
+
+export interface ProjectInfoState {
+  name: string;
+  path: string;
+}
+
 export interface EditorState {
   editor?: string;
 }
@@ -185,6 +228,11 @@ export interface SettingsSetAction {
   settingsHash?: string;
 }
 
+export interface StatsGetAction {
+  action: 'stats:get';
+  correlationId: string;
+}
+
 export interface ConfirmReplyAction {
   action: 'confirm:reply';
   correlationId: string;
@@ -208,10 +256,33 @@ export type RemoteAction =
   | ChatGetHistoryPageAction
   | SettingsGetAction
   | SettingsSetAction
+  | StatsGetAction
   | ConfirmReplyAction
   | AskUserReplyAction;
 
 // --- Response Payloads (Server -> Client) ---
+
+export interface StatsFullResponse {
+  type: 'response:stats:full';
+  correlationId: string;
+  models: ModelStats[];
+  summary: {
+    sessionId: string;
+    authMethod: string;
+    userEmail?: string;
+    tier?: string;
+    toolCalls: {
+      total: number;
+      success: number;
+      fail: number;
+    };
+    successRate: number;
+    wallTimeSeconds: number;
+    agentActiveSeconds: number;
+    apiTimeSeconds: number;
+    toolTimeSeconds: number;
+  };
+}
 
 export interface RemoteSettingDefinition {
   id: string;
@@ -320,8 +391,12 @@ export interface RemoteMessageRecord {
  * - state:system:ram:heap_total
  * - state:system:ram:heap_used
  * - state:system:agents
-
- * - state:system:ramUsage
+ * - state:system:git_branch
+ * - state:system:tokens:input
+ * - state:system:tokens:output
+ * - state:system:tokens:cached
+ * - state:system:tokens:total
+ * - state:system:project_info
  * - state:session:status
  * - state:session:model
  * - state:session:id
