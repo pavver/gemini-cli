@@ -5,10 +5,12 @@
  */
 
 import { type FunctionCall } from '@google/genai';
-import type {
+import {
   ToolConfirmationOutcome,
-  ToolConfirmationPayload,
+  type ToolConfirmationPayload,
 } from '../tools/tools.js';
+
+export { ToolConfirmationOutcome };
 import type { ToolCall } from '../scheduler/types.js';
 
 export enum MessageBusType {
@@ -65,10 +67,17 @@ export interface ToolConfirmationResponse {
   requiresUserConfirmation?: boolean;
 }
 
+export interface UserConfirmationOption {
+  value: string;
+  variant?: 'primary' | 'secondary' | 'danger' | 'success' | 'warning';
+}
+
 /**
  * Data-only versions of ToolCallConfirmationDetails for bus transmission.
  */
-export type SerializableConfirmationDetails =
+export type SerializableConfirmationDetails = {
+  options?: UserConfirmationOption[];
+} & (
   | {
       type: 'info';
       title: string;
@@ -112,7 +121,8 @@ export type SerializableConfirmationDetails =
       type: 'exit_plan_mode';
       title: string;
       planPath: string;
-    };
+    }
+);
 
 export interface UpdatePolicy {
   type: MessageBusType.UPDATE_POLICY;

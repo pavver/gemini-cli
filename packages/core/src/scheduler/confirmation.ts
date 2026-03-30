@@ -30,9 +30,10 @@ import {
   type EditorType,
   NO_EDITOR_AVAILABLE_ERROR,
 } from '../utils/editor.js';
-import type { DiffUpdateResult } from '../ide/ide-client.js';
+import { IdeClient, type DiffUpdateResult } from '../ide/ide-client.js';
 import { debugLogger } from '../utils/debugLogger.js';
 import { coreEvents } from '../utils/events.js';
+import { getToolConfirmationOptions } from '../utils/confirmationUtils.js';
 
 export interface ConfirmationResult {
   outcome: ToolConfirmationOutcome;
@@ -145,6 +146,14 @@ export async function resolveConfirmation(
     const correlationId = randomUUID();
     const serializableDetails = details as SerializableConfirmationDetails;
     lastDetails = serializableDetails;
+
+    // Generate UI options based on core logic
+    const ideClient = await IdeClient.getInstance();
+    serializableDetails.options = getToolConfirmationOptions(
+      serializableDetails,
+      deps.config,
+      ideClient.isDiffingEnabled(),
+    );
 
     const ideConfirmation =
       'ideConfirmation' in details ? details.ideConfirmation : undefined;

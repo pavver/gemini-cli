@@ -41,6 +41,18 @@ import {
   type DeceptiveUrlDetails,
 } from '../../utils/urlSecurityUtils.js';
 
+const OUTCOME_LABELS: Record<string, string> = {
+  [ToolConfirmationOutcome.ProceedOnce]: 'Allow once',
+  [ToolConfirmationOutcome.ProceedAlways]: 'Allow for this session',
+  [ToolConfirmationOutcome.ProceedAlwaysAndSave]:
+    'Allow for all future sessions',
+  [ToolConfirmationOutcome.ProceedAlwaysServer]:
+    'Allow all server tools for this session',
+  [ToolConfirmationOutcome.ProceedAlwaysTool]: 'Allow tool for this session',
+  [ToolConfirmationOutcome.ModifyWithEditor]: 'Modify with external editor',
+  [ToolConfirmationOutcome.Cancel]: 'No, suggest changes (esc)',
+};
+
 export interface ToolConfirmationMessageProps {
   callId: string;
   confirmationDetails: SerializableConfirmationDetails;
@@ -227,6 +239,19 @@ export const ToolConfirmationMessage: React.FC<
   }, [deceptiveUrlWarnings]);
 
   const getOptions = useCallback(() => {
+    // Prioritize pre-generated options from the core (e.g. for Remote API consistency)
+    if (confirmationDetails.options && confirmationDetails.options.length > 0) {
+      return confirmationDetails.options.map((opt) => {
+        const label = OUTCOME_LABELS[opt.value] || opt.value;
+        return {
+          label,
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+          value: opt.value as ToolConfirmationOutcome,
+          key: opt.value,
+        };
+      });
+    }
+
     const options: Array<RadioSelectItem<ToolConfirmationOutcome>> = [];
 
     if (confirmationDetails.type === 'edit') {

@@ -377,6 +377,11 @@ export const AdminControlsSettingsSchema = z.object({
       mcpConfig: McpConfigDefinitionSchema.optional(),
     })
     .optional(),
+  security: z
+    .object({
+      enablePermanentToolApproval: z.boolean().optional(),
+    })
+    .optional(),
   cliFeatureSetting: CliFeatureSettingSchema.optional(),
 });
 

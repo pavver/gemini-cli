@@ -113,6 +113,7 @@ export * from './utils/channel.js';
 export * from './utils/constants.js';
 export * from './utils/sessionUtils.js';
 export * from './utils/cache.js';
+export * from './utils/confirmationUtils.js';
 
 // Export services
 export * from './services/fileDiscoveryService.js';

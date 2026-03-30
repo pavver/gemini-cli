@@ -4,6 +4,33 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import {
+  type SerializableConfirmationDetails,
+  type UserConfirmationOption,
+} from '@google/gemini-cli-core';
+import { type WebSocket } from 'ws';
+
+export interface UserConfirmationRequest {
+  correlationId: string;
+  type: 'tool' | 'consent' | 'ask_user';
+  prompt: string;
+  header?: string;
+  details?: SerializableConfirmationDetails;
+  options: UserConfirmationOption[];
+  hasInput?: boolean;
+  inputPlaceholder?: string;
+  questionIndex?: number;
+  totalQuestions?: number;
+}
+
+export interface RemoteSession {
+  id: string;
+  ws: WebSocket;
+  ip: string;
+  authenticated: boolean;
+  subscriptions: Set<string>;
+}
+
 /**
  * Explicit types for the Remote API protocol.
  * These are "Simple Types" as per EVENTBUS_TOPICS_SPEC.md.
@@ -236,14 +263,8 @@ export interface StatsGetAction {
 export interface ConfirmReplyAction {
   action: 'confirm:reply';
   correlationId: string;
-  confirmed: boolean;
-  outcome?: string;
-}
-
-export interface AskUserReplyAction {
-  action: 'confirm:ask_user:reply';
-  correlationId: string;
-  answers: Record<string, string | string[] | boolean>;
+  outcome: string;
+  input?: string;
   cancelled?: boolean;
 }
 
@@ -257,8 +278,7 @@ export type RemoteAction =
   | SettingsGetAction
   | SettingsSetAction
   | StatsGetAction
-  | ConfirmReplyAction
-  | AskUserReplyAction;
+  | ConfirmReplyAction;
 
 // --- Response Payloads (Server -> Client) ---
 
@@ -358,13 +378,10 @@ export interface RemoteTokensSummary {
 
 export interface RemoteToolCallRecord {
   id: string;
-  name: string;
-  args: Record<string, unknown>;
+  name?: string;
+  args?: Record<string, unknown>;
+  status?: string;
   result?: RemotePart[];
-  status: string;
-  timestamp: string;
-  displayName?: string;
-  description?: string;
 }
 
 export interface RemoteMessageRecord {

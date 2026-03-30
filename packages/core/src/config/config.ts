@@ -2380,6 +2380,13 @@ export class Config implements McpContext {
     return this.folderTrust ? (this.trustedFolder ?? false) : true;
   }
 
+  allowPermanentToolApproval(): boolean {
+    return (
+      this.getRemoteAdminSettings()?.security?.enablePermanentToolApproval ??
+      false
+    );
+  }
+
   setIdeMode(value: boolean): void {
     this.ideMode = value;
   }
